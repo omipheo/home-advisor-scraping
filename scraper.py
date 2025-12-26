@@ -500,6 +500,35 @@ class HomeAdvisorScraper:
             
             print(f"Found {len(listings)} listings on page {page_num}")
             
+            # If no listings found, wait a bit longer and check again (might be slow loading)
+            if len(listings) == 0:
+                print(f"  ⚠️  No listings found, waiting longer for page to load...")
+                time.sleep(5)
+                # Try one more time with a longer wait
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "article.ProList_businessProCard__qvaeT, body"))
+                    )
+                    time.sleep(3)
+                    # Try finding listings again
+                    business_cards = self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT')
+                    if business_cards:
+                        print(f"  Retrying extraction after longer wait...")
+                        seen_urls = set()
+                        for card in business_cards:
+                            try:
+                                business_data = self.extract_business_info_from_card(card)
+                                if business_data and business_data.get('business_name'):
+                                    profile_url = business_data.get('profile_url')
+                                    if profile_url and profile_url not in seen_urls:
+                                        seen_urls.add(profile_url)
+                                        listings.append(business_data)
+                            except Exception as e:
+                                continue
+                        print(f"  Found {len(listings)} listings after retry")
+                except:
+                    pass
+            
             return listings
             
         except Exception as e:
@@ -1146,22 +1175,57 @@ class HomeAdvisorScraper:
                         print(f"  Data will be retried on next batch write")
                         raise  # Re-raise on final attempt
     
-    def scrape_all_pages(self, total_pages=105, start_page=1):
+    def scrape_all_pages(self, total_pages=105, start_page=4):
         """Scrape all pages and collect data"""
         all_businesses = []
+        consecutive_empty_pages = 0
+        max_consecutive_empty = 3  # Stop only after 3 consecutive empty pages
         
         for page_num in range(start_page, total_pages + 1):
             print(f"\n{'='*50}")
             print(f"Processing page {page_num} of {total_pages}")
             print(f"{'='*50}")
             
-            listings = self.scrape_listings_from_page(page_num)
+            # Retry logic for pages that might fail
+            listings = None
+            for retry in range(2):  # Try up to 2 times
+                try:
+                    listings = self.scrape_listings_from_page(page_num)
+                    if listings:
+                        break  # Success, exit retry loop
+                    elif retry == 0:
+                        print(f"  No listings found, retrying page {page_num}...")
+                        time.sleep(5)  # Wait before retry
+                except Exception as e:
+                    print(f"  Error scraping page {page_num} (attempt {retry + 1}): {e}")
+                    if retry < 1:
+                        time.sleep(5)  # Wait before retry
             
             if not listings:
-                print(f"No listings found on page {page_num}, stopping...")
-                break
+                consecutive_empty_pages += 1
+                print(f"⚠️  No listings found on page {page_num}")
+                print(f"   Consecutive empty pages: {consecutive_empty_pages}/{max_consecutive_empty}")
+                
+                # Only stop if we have multiple consecutive empty pages
+                if consecutive_empty_pages >= max_consecutive_empty:
+                    print(f"\n⚠️  Stopping: {max_consecutive_empty} consecutive empty pages detected.")
+                    print(f"   This might indicate:")
+                    print(f"   - Reached the end of available listings")
+                    print(f"   - Cloudflare blocking (try non-headless mode)")
+                    print(f"   - Page structure changed")
+                    print(f"   You can resume from page {page_num + 1} by setting START_PAGE = {page_num + 1}")
+                    break
+                else:
+                    print(f"   Continuing to next page...")
+                    time.sleep(3)  # Brief pause before next page
+                    continue
+            else:
+                # Reset counter if we found listings
+                consecutive_empty_pages = 0
             
-            # Enrich each business with phone and email
+            # Enrich each business with phone and email (only if we have listings)
+            if not listings:
+                continue  # Skip to next page if no listings
             for i, business in enumerate(listings, 1):
                 print(f"\nProcessing business {i}/{len(listings)}: {business.get('business_name', 'Unknown')}")
                 try:
