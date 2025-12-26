@@ -616,7 +616,70 @@ class HomeAdvisorScraper:
                                 href = 'https://www.homeadvisor.com/' + href
                         data['profile_url'] = href
                 except:
-                    pass
+                    # Try to find profile URL from JSON-LD structured data
+                    try:
+                        # Get the page source and look for JSON-LD with this business name
+                        page_source = self.driver.page_source
+                        import json
+                        import re
+                        
+                        # Find all JSON-LD script tags
+                        json_ld_pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+                        matches = re.findall(json_ld_pattern, page_source, re.DOTALL | re.IGNORECASE)
+                        
+                        business_name_lower = data['business_name'].lower() if data['business_name'] else ''
+                        
+                        for json_text in matches:
+                            try:
+                                json_data = json.loads(json_text)
+                                
+                                # Look for the business in the JSON structure
+                                def find_business_in_json(obj, target_name):
+                                    """Recursively search for business data in JSON"""
+                                    if isinstance(obj, dict):
+                                        # Check if this is a business object with matching name
+                                        if '@type' in obj:
+                                            obj_type = str(obj.get('@type', ''))
+                                            if 'HomeAndConstructionBusiness' in obj_type or 'LocalBusiness' in obj_type:
+                                                if 'name' in obj and target_name.lower() in obj['name'].lower():
+                                                    if 'url' in obj:
+                                                        url = obj['url']
+                                                        if url and ('rated' in url or '/pro/' in url):
+                                                            return url
+                                        # Check itemListElement for businesses
+                                        if 'itemListElement' in obj:
+                                            for item in obj['itemListElement']:
+                                                if 'item' in item:
+                                                    result = find_business_in_json(item['item'], target_name)
+                                                    if result:
+                                                        return result
+                                        # Recursively search all values
+                                        for value in obj.values():
+                                            result = find_business_in_json(value, target_name)
+                                            if result:
+                                                return result
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            result = find_business_in_json(item, target_name)
+                                            if result:
+                                                return result
+                                    return None
+                                
+                                if business_name_lower:
+                                    profile_url = find_business_in_json(json_data, business_name_lower)
+                                    if profile_url:
+                                        # Make sure it's a full URL
+                                        if not profile_url.startswith('http'):
+                                            if profile_url.startswith('/'):
+                                                profile_url = 'https://www.homeadvisor.com' + profile_url
+                                            else:
+                                                profile_url = 'https://www.homeadvisor.com/' + profile_url
+                                        data['profile_url'] = profile_url
+                                        break
+                            except:
+                                continue
+                    except:
+                        pass
             
             # Extract star rating
             try:
@@ -716,6 +779,73 @@ class HomeAdvisorScraper:
                                 pass
             except:
                 pass
+            
+            # Try to extract profile URL from JSON-LD structured data if not found yet
+            if not data['profile_url']:
+                try:
+                    # Look for JSON-LD script tag in the page (might be at page level, not card level)
+                    # First try to find it in the card's parent or siblings
+                    try:
+                        # Get the page source and look for JSON-LD with this business name
+                        page_source = self.driver.page_source
+                        import json
+                        import re
+                        
+                        # Find all JSON-LD script tags
+                        json_ld_pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+                        matches = re.findall(json_ld_pattern, page_source, re.DOTALL | re.IGNORECASE)
+                        
+                        for json_text in matches:
+                            try:
+                                json_data = json.loads(json_text)
+                                # Check if this JSON contains the business name
+                                business_name_lower = data['business_name'].lower() if data['business_name'] else ''
+                                
+                                # Look for the business in the JSON structure
+                                def find_business_in_json(obj, target_name):
+                                    """Recursively search for business data in JSON"""
+                                    if isinstance(obj, dict):
+                                        # Check if this is a business object with matching name
+                                        if '@type' in obj and 'HomeAndConstructionBusiness' in str(obj.get('@type', '')):
+                                            if 'name' in obj and target_name.lower() in obj['name'].lower():
+                                                if 'url' in obj:
+                                                    return obj['url']
+                                        # Check itemListElement for businesses
+                                        if 'itemListElement' in obj:
+                                            for item in obj['itemListElement']:
+                                                if 'item' in item:
+                                                    result = find_business_in_json(item['item'], target_name)
+                                                    if result:
+                                                        return result
+                                        # Recursively search all values
+                                        for value in obj.values():
+                                            result = find_business_in_json(value, target_name)
+                                            if result:
+                                                return result
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            result = find_business_in_json(item, target_name)
+                                            if result:
+                                                return result
+                                    return None
+                                
+                                if business_name_lower:
+                                    profile_url = find_business_in_json(json_data, business_name_lower)
+                                    if profile_url:
+                                        # Make sure it's a full URL
+                                        if not profile_url.startswith('http'):
+                                            if profile_url.startswith('/'):
+                                                profile_url = 'https://www.homeadvisor.com' + profile_url
+                                            else:
+                                                profile_url = 'https://www.homeadvisor.com/' + profile_url
+                                        data['profile_url'] = profile_url
+                                        break
+                            except:
+                                continue
+                    except:
+                        pass
+                except:
+                    pass
             
             # Extract address from JSON-LD structured data if available
             try:
@@ -1153,9 +1283,73 @@ class HomeAdvisorScraper:
             traceback.print_exc()
             return data
     
+    def search_profile_url(self, business_name):
+        """Try to find profile URL by searching HomeAdvisor for the business name"""
+        try:
+            # Search HomeAdvisor for the business
+            search_url = f"https://www.homeadvisor.com/search.html?query={business_name.replace(' ', '+')}"
+            print(f"  Searching for profile URL: {search_url}")
+            self.driver.get(search_url)
+            time.sleep(3)
+            
+            # Wait for Cloudflare if present
+            self.wait_for_cloudflare_challenge()
+            
+            # Look for profile links in search results
+            try:
+                profile_links = self.driver.find_elements(By.CSS_SELECTOR, 
+                    'a[href*="rated"], a[href*="/pro/"]')
+                for link in profile_links[:5]:  # Check first 5 results
+                    href = link.get_attribute('href')
+                    link_text = link.text.lower()
+                    business_name_lower = business_name.lower()
+                    
+                    # Check if this link seems related to our business
+                    if href and ('rated' in href or '/pro/' in href):
+                        # Check if the link text or nearby text contains the business name
+                        try:
+                            parent = link.find_element(By.XPATH, './ancestor::*[contains(@class, "result") or contains(@class, "listing") or contains(@class, "card")][1]')
+                            parent_text = parent.text.lower()
+                            if business_name_lower in parent_text:
+                                # Make sure it's a full URL
+                                if not href.startswith('http'):
+                                    if href.startswith('/'):
+                                        href = 'https://www.homeadvisor.com' + href
+                                    else:
+                                        href = 'https://www.homeadvisor.com/' + href
+                                return href
+                        except:
+                            # If we can't check parent, just return the first matching href
+                            if not href.startswith('http'):
+                                if href.startswith('/'):
+                                    href = 'https://www.homeadvisor.com' + href
+                                else:
+                                    href = 'https://www.homeadvisor.com/' + href
+                            return href
+            except:
+                pass
+        except Exception as e:
+            print(f"  ⚠️  Error searching for profile URL: {e}")
+        
+        return None
+    
     def enrich_business_data(self, business_data):
         """Enrich business data by visiting the profile page"""
         profile_url = business_data.get('profile_url', '')
+        
+        # If we don't have a profile URL, try to search for it
+        if not profile_url:
+            business_name = business_data.get('business_name', '')
+            if business_name:
+                print(f"  No profile URL found, searching HomeAdvisor for '{business_name}'...")
+                profile_url = self.search_profile_url(business_name)
+                if profile_url:
+                    business_data['profile_url'] = profile_url
+                    print(f"  ✓ Found profile URL: {profile_url}")
+                else:
+                    print(f"  ⚠️  Could not find profile URL for '{business_name}'")
+                    # Continue without profile URL - we'll still have name, rating, reviews from listing page
+                    return business_data
         
         # If we have a profile URL, visit it to get all the data
         if profile_url:
