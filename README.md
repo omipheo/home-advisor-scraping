@@ -30,10 +30,12 @@ pip install -r requirements.txt
    - Click on the service account and go to "Keys" tab
    - Click "Add Key" > "Create new key" > Choose JSON
    - Download the JSON file and save it as `homeadvisorelizabethscraping-613984138d99.json` in the project root
-5. Share your Google Sheet with the service account email (found in the JSON file):
-   - Open your Google Sheet
-   - Click "Share" button
-   - Paste the service account email and give it "Editor" access
+5. Share your Google Sheet with the service account email:
+   - Open your Google Sheet: https://docs.google.com/spreadsheets/d/1mt2pi6hxnDpKiCu8sHlBQHz07ptujXEOPJxq5T-Zfxw
+   - Click "Share" button (top right)
+   - Add this email as an **Editor**: `home-advisor-gh-api@homeadvisorelizabethscraping.iam.gserviceaccount.com`
+   - Click "Send" (you can uncheck "Notify people" if you don't want an email)
+   - **Important**: The service account must have Editor access to write data
 
 ### 3. Google Chrome Browser
 
@@ -46,16 +48,46 @@ pip install -r requirements.txt
 ## Usage
 
 1. Make sure `homeadvisorelizabethscraping-613984138d99.json` is in the project root directory
-2. **Test first** (recommended):
+
+2. **Test Google Sheets connection** (important!):
+   ```bash
+   python test_google_sheet.py
+   ```
+   This will:
+   - Verify the credentials work
+   - Check if the service account has access to your sheet
+   - Write a test row to confirm everything works
+   - Show you exactly what to do if there are permission issues
+
+3. **Test the scraper** (recommended):
    ```bash
    python test_scraper.py
    ```
    This will test the scraper on just the first page to make sure everything works.
 
-3. Run the full scraper:
+4. Run the full scraper:
    ```bash
    python scraper.py
    ```
+
+## Checking if Data is Being Written
+
+### Method 1: Test Script
+Run the test script to verify connection and write a test row:
+```bash
+python test_google_sheet.py
+```
+This will write a test row that you can see in your sheet.
+
+### Method 2: Check Your Sheet
+1. Open your Google Sheet: https://docs.google.com/spreadsheets/d/1mt2pi6hxnDpKiCu8sHlBQHz07ptujXEOPJxq5T-Zfxw
+2. Look for new rows being added (the scraper writes every 10 businesses)
+3. The headers should be: business name, star rating, # of reviews, address, website, Phone Number, Email
+
+### Method 3: Watch the Console
+The scraper prints messages like:
+- `"Wrote 10 businesses to sheet"` - confirms data was written
+- `"Sheet initialized with headers"` - confirms connection worked
 
 The script will:
 - Clear the existing sheet and add headers (on first run)

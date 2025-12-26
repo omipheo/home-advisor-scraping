@@ -769,11 +769,12 @@ class HomeAdvisorScraper:
 
 def main():
     # Configuration
-    GOOGLE_SHEET_ID = "1mt2pi6hxnDpKiCu8sHlBQHz07ptujXEOPJxq5T-Zfxw"
+    GOOGLE_SHEET_ID = "1b8JUs4vGZXY7YTnmPJ9KEUqDzXufmRuRBL2u5i6NPx4"  # Your Google Sheet ID
     CREDENTIALS_FILE = "homeadvisorelizabethscraping-613984138d99.json"  # Google Service Account credentials
     TOTAL_PAGES = 105
     START_PAGE = 1  # Change this to resume from a specific page
     HEADLESS_MODE = True  # Set to False if you want to see the browser (useful for solving CAPTCHAs)
+    
     
     if not os.path.exists(CREDENTIALS_FILE):
         print(f"ERROR: {CREDENTIALS_FILE} not found!")
