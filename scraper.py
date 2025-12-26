@@ -289,47 +289,22 @@ class HomeAdvisorScraper:
             
             listings = []
             
-            # Use Selenium to find business listing links
-            # Strategy: Find all links to /pro/ or /rated. pages
+            # Use Selenium to find business listing cards
+            # Strategy: Find all article elements with the business card class
             try:
-                pro_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/pro/"], a[href*="/rated."]')
+                business_cards = self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT')
                 
                 seen_urls = set()
-                for link in pro_links:
+                for card in business_cards:
                     try:
-                        href = link.get_attribute('href')
-                        link_text = link.text.strip().lower()
+                        # Extract business data from the card
+                        business_data = self.extract_business_info_from_card(card)
                         
-                        if not href:
-                            continue
-                        
-                        # Filter out ads and promotional content
-                        skip_keywords = [
-                            'join as a pro',
-                            'sign up',
-                            'become a pro',
-                            'signup',
-                            'register',
-                            'advertisement',
-                            'ad',
-                            'sponsored'
-                        ]
-                        
-                        if any(keyword in link_text for keyword in skip_keywords):
-                            continue
-                        
-                        if any(keyword in href.lower() for keyword in ['signup', 'register', 'join']):
-                            continue
-                        
-                        # Avoid duplicates
-                        if href in seen_urls:
-                            continue
-                        seen_urls.add(href)
-                        
-                        # Extract business data directly from the link element
-                        business_data = self.extract_business_info_from_element(link)
                         if business_data and business_data.get('business_name'):
-                            listings.append(business_data)
+                            profile_url = business_data.get('profile_url')
+                            if profile_url and profile_url not in seen_urls:
+                                seen_urls.add(profile_url)
+                                listings.append(business_data)
                             
                     except Exception as e:
                         continue
@@ -346,6 +321,85 @@ class HomeAdvisorScraper:
             import traceback
             traceback.print_exc()
             return []
+    
+    def extract_business_info_from_card(self, card_element):
+        """Extract business information from a business card element on the listing page"""
+        data = {
+            'business_name': '',
+            'star_rating': '',
+            'num_reviews': '',
+            'address': '',
+            'website': '',
+            'phone': '',
+            'email': '',
+            'profile_url': ''
+        }
+        
+        try:
+            # Extract business name - try desktop first, then mobile
+            try:
+                name_elem = card_element.find_element(By.CSS_SELECTOR, 'h3[data-testid="business-name-desktop"]')
+                data['business_name'] = name_elem.text.strip()
+            except:
+                try:
+                    name_elem = card_element.find_element(By.CSS_SELECTOR, 'h3[data-testid="business-name-mobile"]')
+                    data['business_name'] = name_elem.text.strip()
+                except:
+                    pass
+            
+            # Extract profile URL
+            try:
+                profile_link = card_element.find_element(By.CSS_SELECTOR, 'a[data-testid="profile-link"]')
+                href = profile_link.get_attribute('href')
+                if href:
+                    data['profile_url'] = href
+            except:
+                pass
+            
+            # Extract star rating
+            try:
+                rating_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_ratingNumber__2CoLI')
+                data['star_rating'] = rating_elem.text.strip()
+            except:
+                pass
+            
+            # Extract number of reviews
+            try:
+                reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_reviewCount__u0DTP')
+                # The number is inside a div
+                review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
+                reviews_text = review_div.text.strip()
+                # Remove parentheses if present
+                reviews_text = reviews_text.strip('()')
+                data['num_reviews'] = reviews_text
+            except:
+                pass
+            
+            # Extract address from JSON-LD structured data if available
+            try:
+                # Look for JSON-LD script tag in the card
+                script_tags = card_element.find_elements(By.TAG_NAME, 'script')
+                for script in script_tags:
+                    script_type = script.get_attribute('type')
+                    if script_type == 'application/ld+json':
+                        import json
+                        json_text = script.get_attribute('innerHTML')
+                        if json_text:
+                            json_data = json.loads(json_text)
+                            # Navigate through the JSON structure to find address
+                            if '@type' in json_data and json_data['@type'] == 'SearchResultsPage':
+                                if 'mainEntity' in json_data and 'itemListElement' in json_data['mainEntity']:
+                                    # This is the page-level JSON, not individual business
+                                    pass
+            except:
+                pass
+            
+            # Address might not be on listing page - will get from profile page
+            
+        except Exception as e:
+            print(f"  Error extracting info from card: {e}")
+        
+        return data
     
     def extract_business_info(self, container):
         """Extract business information from a listing container"""
