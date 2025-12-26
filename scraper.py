@@ -1,5 +1,3 @@
-import requests
-from bs4 import BeautifulSoup
 import time
 import re
 import gspread
@@ -32,18 +30,8 @@ class HomeAdvisorScraper:
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         ]
         
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': random.choice(user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-        })
+        # No need for requests session - using Selenium only
+        self.user_agent = random.choice(user_agents)
         
         # Setup Selenium with Chrome browser (Chrome must be installed)
         # ChromeDriver will be automatically downloaded by webdriver-manager
@@ -289,12 +277,10 @@ class HomeAdvisorScraper:
             self.driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(1)
             
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
-            
             # Debug: Save HTML for inspection (only on first page)
             if page_num == 1:
                 try:
+                    html = self.driver.page_source
                     with open('debug_page1.html', 'w', encoding='utf-8') as f:
                         f.write(html)
                     print("Debug: Saved page HTML to debug_page1.html")
@@ -303,119 +289,55 @@ class HomeAdvisorScraper:
             
             listings = []
             
-            # Multiple strategies to find listings
-            listing_containers = []
-            
-            # Strategy 1: Look for links to /pro/ pages (HomeAdvisor business profile links)
-            # But filter out promotional/ad links
-            pro_links = soup.find_all('a', href=re.compile(r'/pro/', re.I))
-            for link in pro_links:
-                link_text = link.get_text(strip=True).lower()
-                href = link.get('href', '').lower()
+            # Use Selenium to find business listing links
+            # Strategy: Find all links to /pro/ or /rated. pages
+            try:
+                pro_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/pro/"], a[href*="/rated."]')
                 
-                # Filter out ads and promotional content
-                skip_keywords = [
-                    'join as a pro',
-                    'sign up',
-                    'become a pro',
-                    'signup',
-                    'register',
-                    'advertisement',
-                    'ad',
-                    'sponsored'
-                ]
-                
-                if any(keyword in link_text for keyword in skip_keywords):
-                    continue
-                
-                if any(keyword in href for keyword in ['signup', 'register', 'join']):
-                    continue
-                
-                # Find parent container
-                parent = link.find_parent(['div', 'article', 'section', 'li', 'h2', 'h3'])
-                if parent:
-                    # Make sure it's not nested in another listing
-                    is_nested = False
-                    for existing in listing_containers:
-                        if parent in existing.descendants or parent == existing:
-                            is_nested = True
-                            break
-                    if not is_nested:
-                        listing_containers.append(parent)
-            
-            # Strategy 2: Look for common HomeAdvisor class patterns
-            if not listing_containers:
-                patterns = [
-                    r'[Ss]rpResult',
-                    r'[Ll]isting',
-                    r'[Pp]ro[Cc]ard',
-                    r'[Bb]usiness[Cc]ard',
-                    r'[Rr]esult[Cc]ard'
-                ]
-                for pattern in patterns:
-                    containers = soup.find_all(['div', 'article'], class_=re.compile(pattern))
-                    if containers:
-                        listing_containers.extend(containers)
-                        break
-            
-            # Strategy 3: Look for data attributes
-            if not listing_containers:
-                listing_containers = soup.find_all(['div', 'article'], attrs={'data-testid': re.compile(r'.*', re.I)})
-            
-            # Strategy 4: Look for any div/article with business-related text
-            if not listing_containers:
-                all_divs = soup.find_all(['div', 'article', 'section'])
-                for div in all_divs:
-                    text = div.get_text()
-                    if any(keyword in text.lower() for keyword in ['reviews', 'rating', 'star', 'phone', 'address']):
-                        if len(text) > 50 and len(text) < 2000:  # Reasonable size for a listing
-                            listing_containers.append(div)
-            
-            # Remove duplicates and nested containers
-            unique_containers = []
-            seen_texts = set()
-            for container in listing_containers:
-                text = container.get_text(strip=True)[:100]  # First 100 chars as signature
-                if text and text not in seen_texts:
-                    seen_texts.add(text)
-                    unique_containers.append(container)
-            
-            print(f"Found {len(unique_containers)} potential listings on page {page_num}")
-            
-            for container in unique_containers:
-                try:
-                    business_data = self.extract_business_info(container)
-                    business_name = business_data.get('business_name', '').lower()
-                    
-                    # Filter out ads and promotional content
-                    skip_keywords = [
-                        'join as a pro',
-                        'sign up',
-                        'become a pro',
-                        'signup',
-                        'register',
-                        'advertisement',
-                        'ad',
-                        'sponsored',
-                        'get started',
-                        'learn more'
-                    ]
-                    
-                    if business_name and any(keyword in business_name for keyword in skip_keywords):
+                seen_urls = set()
+                for link in pro_links:
+                    try:
+                        href = link.get_attribute('href')
+                        link_text = link.text.strip().lower()
+                        
+                        if not href:
+                            continue
+                        
+                        # Filter out ads and promotional content
+                        skip_keywords = [
+                            'join as a pro',
+                            'sign up',
+                            'become a pro',
+                            'signup',
+                            'register',
+                            'advertisement',
+                            'ad',
+                            'sponsored'
+                        ]
+                        
+                        if any(keyword in link_text for keyword in skip_keywords):
+                            continue
+                        
+                        if any(keyword in href.lower() for keyword in ['signup', 'register', 'join']):
+                            continue
+                        
+                        # Avoid duplicates
+                        if href in seen_urls:
+                            continue
+                        seen_urls.add(href)
+                        
+                        # Extract business data directly from the link element
+                        business_data = self.extract_business_info_from_element(link)
+                        if business_data and business_data.get('business_name'):
+                            listings.append(business_data)
+                            
+                    except Exception as e:
                         continue
-                    
-                    # Must have a business name and at least some other data
-                    if business_data and business_name and len(business_name) > 2:
-                        # Prefer listings with more data (rating, reviews, address)
-                        if (business_data.get('star_rating') or 
-                            business_data.get('num_reviews') or 
-                            business_data.get('address')):
-                            listings.append(business_data)
-                        elif business_name:  # Still add if it has a name
-                            listings.append(business_data)
-                except Exception as e:
-                    print(f"Error extracting listing: {e}")
-                    continue
+                        
+            except Exception as e:
+                print(f"Error finding listings with Selenium: {e}")
+            
+            print(f"Found {len(listings)} listings on page {page_num}")
             
             return listings
             
@@ -543,11 +465,18 @@ class HomeAdvisorScraper:
             print(f"  Searching for phone on: {url}")
             # Random delay before request
             time.sleep(random.uniform(1, 3))
-            response = self.session.get(url, timeout=15, allow_redirects=True)
-            response.raise_for_status()
             
-            soup = BeautifulSoup(response.text, 'lxml')
-            text = soup.get_text()
+            # Use Selenium to visit the website
+            self.driver.get(url)
+            time.sleep(random.uniform(2, 4))
+            
+            # Check for CAPTCHA
+            if self.check_for_captcha():
+                print("  ⚠️  CAPTCHA detected on website, skipping...")
+                return None
+            
+            # Get page text using Selenium
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
             
             # Common phone number patterns
             phone_patterns = [
@@ -557,7 +486,7 @@ class HomeAdvisorScraper:
             ]
             
             for pattern in phone_patterns:
-                matches = re.findall(pattern, text)
+                matches = re.findall(pattern, page_text)
                 if matches:
                     # Clean up the phone number
                     phone = re.sub(r'[^\d]', '', matches[0])
@@ -573,20 +502,23 @@ class HomeAdvisorScraper:
             return None
     
     def find_email_on_website(self, url):
-        """Search for email address on a business website"""
+        """Search for email address on a business website using Selenium"""
         if not url or not url.startswith('http'):
             return None
         
         try:
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
+            # Use Selenium to visit the website (if not already there)
+            current_url = self.driver.current_url
+            if current_url != url:
+                self.driver.get(url)
+                time.sleep(random.uniform(2, 4))
             
-            soup = BeautifulSoup(response.text, 'lxml')
-            text = soup.get_text()
+            # Get page text using Selenium
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
             
             # Email pattern
             email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-            matches = re.findall(email_pattern, text)
+            matches = re.findall(email_pattern, page_text)
             
             # Filter out common non-business emails
             filtered = [e for e in matches if not any(x in e.lower() for x in ['example.com', 'test.com', 'placeholder'])]
@@ -604,7 +536,8 @@ class HomeAdvisorScraper:
         """Search Google for business phone number"""
         try:
             query = f"{business_name} {address} phone number"
-            google_url = f"https://www.google.com/search?q={requests.utils.quote(query)}"
+            from urllib.parse import quote
+            google_url = f"https://www.google.com/search?q={quote(query)}"
             
             print(f"  Searching Google for phone: {query}")
             
@@ -617,9 +550,8 @@ class HomeAdvisorScraper:
                 print("  ⚠️  CAPTCHA detected on Google search, skipping...")
                 return None
             
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
-            text = soup.get_text()
+            # Get page text using Selenium
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
             
             # Look for phone numbers in the results
             phone_patterns = [
@@ -628,7 +560,7 @@ class HomeAdvisorScraper:
             ]
             
             for pattern in phone_patterns:
-                matches = re.findall(pattern, text)
+                matches = re.findall(pattern, page_text)
                 if matches:
                     phone = re.sub(r'[^\d]', '', matches[0])
                     if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
@@ -662,40 +594,45 @@ class HomeAdvisorScraper:
                 print("  ⚠️  CAPTCHA detected on profile page, skipping...")
                 return data
             
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
+            # Extract rating using Selenium - specific class: RatingsLockup_ratingNumber__2CoLI
+            try:
+                rating_elem = self.driver.find_element(By.CSS_SELECTOR, 'span[class*="RatingsLockup_ratingNumber"]')
+                data['star_rating'] = rating_elem.text.strip()
+            except:
+                pass
             
-            # Extract rating - using specific class: RatingsLockup_ratingNumber__2CoLI
-            rating_elem = soup.find('span', class_=re.compile(r'RatingsLockup_ratingNumber', re.I))
-            if rating_elem:
-                data['star_rating'] = rating_elem.get_text(strip=True)
-            
-            # Extract review count - using specific class: RatingsLockup_reviewCount
-            review_elem = soup.find('span', class_=re.compile(r'RatingsLockup_reviewCount', re.I))
-            if review_elem:
-                review_text = review_elem.get_text(strip=True)
+            # Extract review count - specific class: RatingsLockup_reviewCount
+            try:
+                review_elem = self.driver.find_element(By.CSS_SELECTOR, 'span[class*="RatingsLockup_reviewCount"]')
+                review_text = review_elem.text.strip()
                 # Extract number from text like "(104)"
                 review_match = re.search(r'\((\d+)\)', review_text)
                 if review_match:
                     data['num_reviews'] = review_match.group(1)
+            except:
+                pass
             
-            # Extract address - using specific class: SubComponents_subHeader__JUXIF
-            address_elem = soup.find('h3', class_=re.compile(r'SubComponents_subHeader', re.I))
-            if address_elem:
-                address_text = address_elem.get_text(strip=True)
+            # Extract address - specific class: SubComponents_subHeader__JUXIF
+            try:
+                address_elem = self.driver.find_element(By.CSS_SELECTOR, 'h3[class*="SubComponents_subHeader"]')
+                address_text = address_elem.text.strip()
                 # Check if it looks like an address (contains street number and state)
                 if re.search(r'\d+.*(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl|Ave).*,\s*[A-Z]{2}', address_text):
                     data['address'] = address_text
+            except:
+                pass
             
-            # Extract website - using specific class: SubComponents_link__Gpwoa
-            website_link = soup.find('a', class_=re.compile(r'SubComponents_link', re.I))
-            if website_link:
-                href = website_link.get('href', '')
+            # Extract website - specific class: SubComponents_link__Gpwoa
+            try:
+                website_link = self.driver.find_element(By.CSS_SELECTOR, 'a[class*="SubComponents_link"]')
+                href = website_link.get_attribute('href')
                 if href and href.startswith('http') and not any(skip in href.lower() for skip in [
                     'homeadvisor.com', 'facebook.com', 'twitter.com', 
                     'linkedin.com', 'instagram.com', 'youtube.com'
                 ]):
                     data['website'] = href
+            except:
+                pass
             
             # Extract phone number - click the button with id="view-phone-number"
             try:
@@ -709,14 +646,11 @@ class HomeAdvisorScraper:
                     self.driver.execute_script("arguments[0].click();", phone_button)
                     time.sleep(2)  # Wait for phone number to appear
                     
-                    # Now extract the phone number from the updated page
-                    html_after_click = self.driver.page_source
-                    soup_after = BeautifulSoup(html_after_click, 'lxml')
-                    
-                    # Look for phone number - it might be in the button text or nearby
-                    phone_button_after = soup_after.find('button', id='view-phone-number')
-                    if phone_button_after:
-                        button_text = phone_button_after.get_text()
+                    # Now extract the phone number from the updated page using Selenium
+                    try:
+                        # Check if phone number is now visible in button text
+                        phone_button_after = self.driver.find_element(By.ID, "view-phone-number")
+                        button_text = phone_button_after.text
                         # Check if phone number is now visible in button text
                         phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', button_text)
                         if phone_match:
@@ -725,10 +659,12 @@ class HomeAdvisorScraper:
                                 if len(phone) == 11:
                                     phone = phone[1:]
                                 data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                    except:
+                        pass
                     
-                    # Also search the entire page for phone patterns
+                    # Also search the entire page text for phone patterns
                     if not data['phone']:
-                        page_text = soup_after.get_text()
+                        page_text = self.driver.find_element(By.TAG_NAME, "body").text
                         phone_patterns = [
                             r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
                             r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
@@ -757,10 +693,8 @@ class HomeAdvisorScraper:
                         print("  Clicking 'Phone number' button (alternative method)...")
                         self.driver.execute_script("arguments[0].click();", phone_button)
                         time.sleep(2)
-                        # Extract phone as above
-                        html_after_click = self.driver.page_source
-                        soup_after = BeautifulSoup(html_after_click, 'lxml')
-                        page_text = soup_after.get_text()
+                        # Extract phone using Selenium
+                        page_text = self.driver.find_element(By.TAG_NAME, "body").text
                         phone_patterns = [
                             r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
                             r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
