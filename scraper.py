@@ -481,18 +481,27 @@ class HomeAdvisorScraper:
                     business_cards = [card for card in business_cards if card.tag_name == 'article']
                 
                 seen_urls = set()
+                seen_names = set()
                 for card in business_cards:
                     try:
                         # Extract business data from the card
                         business_data = self.extract_business_info_from_card(card)
                         
                         if business_data and business_data.get('business_name'):
-                            profile_url = business_data.get('profile_url')
-                            if profile_url and profile_url not in seen_urls:
-                                seen_urls.add(profile_url)
+                            business_name = business_data.get('business_name')
+                            profile_url = business_data.get('profile_url', '')
+                            
+                            # Use business name as unique identifier if no profile URL
+                            unique_id = profile_url if profile_url else business_name
+                            
+                            # Only add if we haven't seen this business before
+                            if unique_id not in seen_urls and business_name not in seen_names:
+                                seen_urls.add(unique_id)
+                                seen_names.add(business_name)
                                 listings.append(business_data)
                             
                     except Exception as e:
+                        print(f"  Error processing card: {e}")
                         continue
                         
             except Exception as e:
@@ -515,15 +524,24 @@ class HomeAdvisorScraper:
                     if business_cards:
                         print(f"  Retrying extraction after longer wait...")
                         seen_urls = set()
+                        seen_names = set()
                         for card in business_cards:
                             try:
                                 business_data = self.extract_business_info_from_card(card)
                                 if business_data and business_data.get('business_name'):
-                                    profile_url = business_data.get('profile_url')
-                                    if profile_url and profile_url not in seen_urls:
-                                        seen_urls.add(profile_url)
+                                    business_name = business_data.get('business_name')
+                                    profile_url = business_data.get('profile_url', '')
+                                    
+                                    # Use business name as unique identifier if no profile URL
+                                    unique_id = profile_url if profile_url else business_name
+                                    
+                                    # Only add if we haven't seen this business before
+                                    if unique_id not in seen_urls and business_name not in seen_names:
+                                        seen_urls.add(unique_id)
+                                        seen_names.add(business_name)
                                         listings.append(business_data)
                             except Exception as e:
+                                print(f"  Error processing card: {e}")
                                 continue
                         print(f"  Found {len(listings)} listings after retry")
                 except:
@@ -551,7 +569,7 @@ class HomeAdvisorScraper:
         }
         
         try:
-            # Extract business name - try desktop first, then mobile
+            # Extract business name - try desktop first, then mobile, then fallbacks
             try:
                 name_elem = card_element.find_element(By.CSS_SELECTOR, 'h3[data-testid="business-name-desktop"]')
                 data['business_name'] = name_elem.text.strip()
@@ -560,16 +578,45 @@ class HomeAdvisorScraper:
                     name_elem = card_element.find_element(By.CSS_SELECTOR, 'h3[data-testid="business-name-mobile"]')
                     data['business_name'] = name_elem.text.strip()
                 except:
-                    pass
+                    # Fallback: try any h3 with BusinessProfileCard_header class
+                    try:
+                        name_elem = card_element.find_element(By.CSS_SELECTOR, 'h3.BusinessProfileCard_header__srI3D')
+                        data['business_name'] = name_elem.text.strip()
+                    except:
+                        # Last resort: try aria-label from profile link
+                        try:
+                            profile_link = card_element.find_element(By.CSS_SELECTOR, 'a[data-testid="profile-link"]')
+                            aria_label = profile_link.get_attribute('aria-label')
+                            if aria_label:
+                                # Extract name from aria-label like "AK Aire, LLC profile (opens in new tab)"
+                                import re
+                                match = re.search(r'^([^(]+)', aria_label)
+                                if match:
+                                    data['business_name'] = match.group(1).strip()
+                        except:
+                            pass
             
-            # Extract profile URL
+            # Extract profile URL - try multiple selectors
             try:
                 profile_link = card_element.find_element(By.CSS_SELECTOR, 'a[data-testid="profile-link"]')
                 href = profile_link.get_attribute('href')
                 if href:
                     data['profile_url'] = href
             except:
-                pass
+                # Fallback: try href attribute with "rated" in it
+                try:
+                    profile_link = card_element.find_element(By.CSS_SELECTOR, 'a[href*="rated"], a[href*="/pro/"]')
+                    href = profile_link.get_attribute('href')
+                    if href and ('rated' in href or '/pro/' in href):
+                        # Make sure it's a full URL
+                        if not href.startswith('http'):
+                            if href.startswith('/'):
+                                href = 'https://www.homeadvisor.com' + href
+                            else:
+                                href = 'https://www.homeadvisor.com/' + href
+                        data['profile_url'] = href
+                except:
+                    pass
             
             # Extract star rating
             try:
@@ -615,44 +662,58 @@ class HomeAdvisorScraper:
             except:
                 pass
             
-            # Extract number of reviews
+            # Extract number of reviews - handle "No reviews yet" cases
             try:
-                # Try desktop reviews first
-                try:
-                    reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-desktop"] span.RatingsLockup_reviewCount__u0DTP')
-                    # The number is inside a div
-                    review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
-                    reviews_text = review_div.text.strip()
-                    if not reviews_text:
-                        reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
-                    # Remove parentheses if present
-                    if reviews_text:
-                        reviews_text = reviews_text.strip('()')
-                        data['num_reviews'] = reviews_text.strip()
-                except:
-                    # Try mobile reviews
+                # First check if there's "No reviews yet" text
+                card_text = card_element.text.lower()
+                if 'no reviews yet' in card_text:
+                    data['num_reviews'] = '0'
+                    # Also set star_rating to empty if not found
+                    if not data['star_rating']:
+                        data['star_rating'] = ''
+                else:
+                    # Try desktop reviews first
                     try:
-                        reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-mobile"] span.RatingsLockup_reviewCount__u0DTP')
+                        reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-desktop"] span.RatingsLockup_reviewCount__u0DTP')
+                        # The number is inside a div
                         review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
                         reviews_text = review_div.text.strip()
                         if not reviews_text:
                             reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
+                        # Remove parentheses if present
                         if reviews_text:
                             reviews_text = reviews_text.strip('()')
-                            data['num_reviews'] = reviews_text.strip()
+                            # Check if it's a number
+                            if reviews_text.isdigit():
+                                data['num_reviews'] = reviews_text.strip()
                     except:
-                        # Fallback: try without data-testid
+                        # Try mobile reviews
                         try:
-                            reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_reviewCount__u0DTP')
+                            reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-mobile"] span.RatingsLockup_reviewCount__u0DTP')
                             review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
                             reviews_text = review_div.text.strip()
                             if not reviews_text:
                                 reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
                             if reviews_text:
                                 reviews_text = reviews_text.strip('()')
-                                data['num_reviews'] = reviews_text.strip()
+                                # Check if it's a number
+                                if reviews_text.isdigit():
+                                    data['num_reviews'] = reviews_text.strip()
                         except:
-                            pass
+                            # Fallback: try without data-testid
+                            try:
+                                reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_reviewCount__u0DTP')
+                                review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
+                                reviews_text = review_div.text.strip()
+                                if not reviews_text:
+                                    reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
+                                if reviews_text:
+                                    reviews_text = reviews_text.strip('()')
+                                    # Check if it's a number
+                                    if reviews_text.isdigit():
+                                        data['num_reviews'] = reviews_text.strip()
+                            except:
+                                pass
             except:
                 pass
             
@@ -1098,19 +1159,24 @@ class HomeAdvisorScraper:
         
         # If we have a profile URL, visit it to get all the data
         if profile_url:
-            profile_data = self.get_data_from_profile_page(profile_url)
-            
-            # Merge profile data into business data
-            if profile_data.get('website'):
-                business_data['website'] = profile_data['website']
-            if profile_data.get('phone'):
-                business_data['phone'] = profile_data['phone']
-            if profile_data.get('address'):
-                business_data['address'] = profile_data['address']
-            if profile_data.get('star_rating'):
-                business_data['star_rating'] = profile_data['star_rating']
-            if profile_data.get('num_reviews'):
-                business_data['num_reviews'] = profile_data['num_reviews']
+            try:
+                profile_data = self.get_data_from_profile_page(profile_url)
+                
+                # Merge profile data into business data
+                if profile_data.get('website'):
+                    business_data['website'] = profile_data['website']
+                if profile_data.get('phone'):
+                    business_data['phone'] = profile_data['phone']
+                if profile_data.get('address'):
+                    business_data['address'] = profile_data['address']
+                # Don't overwrite rating/reviews from listing page unless they're missing
+                if not business_data.get('star_rating') and profile_data.get('star_rating'):
+                    business_data['star_rating'] = profile_data['star_rating']
+                if not business_data.get('num_reviews') and profile_data.get('num_reviews'):
+                    business_data['num_reviews'] = profile_data['num_reviews']
+            except Exception as e:
+                print(f"  ⚠️  Error visiting profile page: {e}")
+                # Continue with data we have from listing page
         
         # If we still don't have phone, try to find it on the website
         website = business_data.get('website', '')
@@ -1210,7 +1276,11 @@ class HomeAdvisorScraper:
             
             # Enrich each business with phone and email
             for i, business in enumerate(listings, 1):
-                print(f"\nProcessing business {i}/{len(listings)}: {business.get('business_name', 'Unknown')}")
+                business_name = business.get('business_name', 'Unknown')
+                rating = business.get('star_rating', 'N/A')
+                reviews = business.get('num_reviews', 'N/A')
+                print(f"\nProcessing business {i}/{len(listings)}: {business_name}")
+                print(f"  Rating: {rating}, Reviews: {reviews}")
                 try:
                     enriched = self.enrich_business_data(business)
                     all_businesses.append(enriched)
