@@ -2,9 +2,14 @@ import time
 import re
 import gspread
 from google.oauth2.service_account import Credentials
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+try:
+    import undetected_chromedriver as uc
+    UC_AVAILABLE = True
+except ImportError:
+    UC_AVAILABLE = False
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -37,8 +42,8 @@ class HomeAdvisorScraper:
         # ChromeDriver will be automatically downloaded by webdriver-manager
         chrome_options = Options()
         
-        if headless:
-            chrome_options.add_argument('--headless=new')  # New headless mode is less detectable
+        # if headless:
+        #     chrome_options.add_argument('--headless=new')  # New headless mode is less detectable
         
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
@@ -62,11 +67,34 @@ class HomeAdvisorScraper:
         chrome_options.add_experimental_option("prefs", prefs)
         
         # Initialize Chrome WebDriver
-        # Note: Google Chrome must be installed on your system
-        # ChromeDriver will be automatically downloaded and managed
+        # Use undetected-chromedriver if available (automatically bypasses Cloudflare)
+        # Otherwise fall back to regular Selenium
         try:
-            # Get ChromeDriver path - ChromeDriverManager sometimes returns wrong file
-            manager_path = ChromeDriverManager().install()
+            if UC_AVAILABLE:
+                print("Using undetected-chromedriver for automatic Cloudflare bypass...")
+                # Use undetected-chromedriver which automatically bypasses Cloudflare
+                chrome_options_uc = uc.ChromeOptions()
+                # Note: Cloudflare bypass works better in non-headless mode
+                # If you encounter issues, set headless=False
+                if headless:
+                    chrome_options_uc.add_argument('--headless=new')
+                chrome_options_uc.add_argument('--no-sandbox')
+                chrome_options_uc.add_argument('--disable-dev-shm-usage')
+                chrome_options_uc.add_argument('--window-size=1920,1080')
+                chrome_options_uc.add_argument(f'--user-agent={random.choice(user_agents)}')
+                
+                # Initialize undetected Chrome (automatically handles Cloudflare Turnstile)
+                # undetected-chromedriver automatically patches ChromeDriver to bypass Cloudflare
+                self.driver = uc.Chrome(options=chrome_options_uc, version_main=None)
+                print("Undetected ChromeDriver initialized (Cloudflare bypass enabled)")
+            else:
+                # Fall back to regular Selenium
+                print("Note: undetected-chromedriver not available.")
+                print("For automatic Cloudflare bypass, install it with: pip install undetected-chromedriver")
+                print("Using regular Selenium (may require manual CAPTCHA solving)...")
+                
+                # Get ChromeDriver path - ChromeDriverManager sometimes returns wrong file
+                manager_path = ChromeDriverManager().install()
             print(f"ChromeDriverManager returned: {manager_path}")
             
             # Determine the directory to search
@@ -238,6 +266,142 @@ class HomeAdvisorScraper:
         except:
             return False
     
+    def wait_for_cloudflare_challenge(self, max_wait=60):
+        """Wait for Cloudflare challenge (including Turnstile) to complete automatically"""
+        try:
+            # Check if we're on a Cloudflare challenge page
+            page_source = self.driver.page_source.lower()
+            is_cloudflare = any(indicator in page_source for indicator in [
+                'just a moment',
+                'cloudflare',
+                'verify you are human',
+                'checking your browser',
+                'cf-turnstile',
+                'challenges.cloudflare.com'
+            ])
+            
+            if not is_cloudflare:
+                return True  # Not a Cloudflare page, proceed
+            
+            print("  ⏳ Cloudflare challenge detected, waiting for automatic completion...")
+            
+            # Wait for the challenge to complete
+            start_time = time.time()
+            last_status = ""
+            
+            while time.time() - start_time < max_wait:
+                try:
+                    current_url = self.driver.current_url
+                    page_source = self.driver.page_source.lower()
+                    
+                    # Check for Turnstile widget completion
+                    try:
+                        # Check if Turnstile iframe is present
+                        turnstile_iframes = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'iframe[src*="challenges.cloudflare.com"], '
+                            'iframe[id*="cf-chl-widget"], '
+                            'iframe[title*="Cloudflare security challenge"]'
+                        )
+                        
+                        # Check if Turnstile response token is present (means challenge completed)
+                        turnstile_response = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'input[name="cf-turnstile-response"][value], '
+                            'input[id*="cf-chl-widget"][id*="_response"][value]'
+                        )
+                        
+                        # If we have a response token, challenge likely completed
+                        if turnstile_response:
+                            response_value = turnstile_response[0].get_attribute('value')
+                            if response_value and len(response_value) > 10:  # Valid token
+                                print("  ✓ Turnstile challenge token received, waiting for redirect...")
+                                time.sleep(3)  # Wait for redirect
+                                # Check if we're past the challenge
+                                page_source_after = self.driver.page_source.lower()
+                                if not any(indicator in page_source_after for indicator in [
+                                    'just a moment',
+                                    'verify you are human',
+                                    'checking your browser'
+                                ]):
+                                    print("  ✓ Cloudflare challenge completed!")
+                                    time.sleep(2)
+                                    return True
+                    except:
+                        pass
+                    
+                    # Check if challenge is complete (we're no longer on challenge page)
+                    if not any(indicator in page_source for indicator in [
+                        'just a moment',
+                        'verify you are human',
+                        'checking your browser'
+                    ]):
+                        # Check if we can find HomeAdvisor content
+                        try:
+                            # Try to find HomeAdvisor-specific elements
+                            self.driver.find_element(By.TAG_NAME, 'body')
+                            # Check for actual content, not just challenge page
+                            if 'homeadvisor' in current_url.lower():
+                                # Look for business listings or profile content
+                                has_content = any([
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="business-info"]'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'h1, h2, h3')
+                                ])
+                                if has_content:
+                                    print("  ✓ Cloudflare challenge completed!")
+                                    time.sleep(2)  # Give page a moment to fully load
+                                    return True
+                        except:
+                            pass
+                    
+                    # Show progress every 5 seconds
+                    elapsed = int(time.time() - start_time)
+                    if elapsed % 5 == 0 and elapsed != 0 and elapsed != last_status:
+                        print(f"  ⏳ Still waiting... ({elapsed}s/{max_wait}s)")
+                        last_status = elapsed
+                    
+                    time.sleep(1)  # Check every second
+                    
+                except Exception as e:
+                    # If we get an error, might mean page changed
+                    time.sleep(1)
+                    continue
+            
+            # Final check if challenge passed
+            try:
+                page_source = self.driver.page_source.lower()
+                current_url = self.driver.current_url
+                
+                # Check if we're past the challenge
+                if not any(indicator in page_source for indicator in [
+                    'just a moment',
+                    'verify you are human',
+                    'checking your browser'
+                ]):
+                    # Verify we have actual content
+                    if 'homeadvisor' in current_url.lower():
+                        has_content = any([
+                            self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="business-info"]'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'body')
+                        ])
+                        if has_content:
+                            print("  ✓ Cloudflare challenge completed!")
+                            return True
+                
+                print("  ⚠️  Cloudflare challenge did not complete automatically")
+                print("  This may require manual intervention or using undetected-chromedriver")
+                if not self.headless:
+                    print("  Please solve the challenge manually in the browser...")
+                    input("  Press Enter after solving the challenge to continue...")
+                    return True
+                return False
+            except:
+                return False
+                
+        except Exception as e:
+            print(f"  Error waiting for Cloudflare challenge: {e}")
+            return False
+    
     def scrape_listings_from_page(self, page_num):
         """Scrape all business listings from a single page"""
         url = self.get_page_url(page_num)
@@ -250,15 +414,24 @@ class HomeAdvisorScraper:
             # Random delay to appear more human-like (3-7 seconds)
             time.sleep(random.uniform(3, 7))
             
-            # Check for CAPTCHA
+            # Wait for Cloudflare challenge if present
+            if not self.wait_for_cloudflare_challenge():
+                print(f"⚠️  Cloudflare challenge not resolved on page {page_num}, skipping...")
+                return []
+            
+            # Check for other CAPTCHAs
             if self.check_for_captcha():
-                print(f"⚠️  CAPTCHA detected on page {page_num}!")
-                if self.headless:
-                    print("   Running in headless mode. Switch to non-headless mode to solve CAPTCHA manually.")
-                    print("   Edit scraper.py and set headless=False in HomeAdvisorScraper()")
-                else:
-                    print("   Please solve the CAPTCHA manually in the browser window...")
-                    input("   Press Enter after solving the CAPTCHA to continue...")
+                # If it's not Cloudflare, it might be a different CAPTCHA
+                page_source = self.driver.page_source.lower()
+                if 'cloudflare' not in page_source:
+                    print(f"⚠️  CAPTCHA detected on page {page_num}!")
+                    if self.headless:
+                        print("   Running in headless mode. Switch to non-headless mode to solve CAPTCHA manually.")
+                        print("   Edit scraper.py and set headless=False in HomeAdvisorScraper()")
+                        return []
+                    else:
+                        print("   Please solve the CAPTCHA manually in the browser window...")
+                        input("   Press Enter after solving the CAPTCHA to continue...")
             
             # Wait for listings to appear - wait for specific HomeAdvisor elements
             try:
@@ -722,50 +895,70 @@ class HomeAdvisorScraper:
             self.driver.get(profile_url)
             time.sleep(random.uniform(3, 5))
             
-            # Check for CAPTCHA
-            if self.check_for_captcha():
-                print("  ⚠️  CAPTCHA detected on profile page, skipping...")
+            # Wait for Cloudflare challenge if present
+            if not self.wait_for_cloudflare_challenge():
+                print("  ⚠️  Cloudflare challenge not resolved, skipping...")
                 return data
             
-            # Extract rating using Selenium - specific class: RatingsLockup_ratingNumber__2CoLI
-            try:
-                rating_elem = self.driver.find_element(By.CSS_SELECTOR, 'span[class*="RatingsLockup_ratingNumber"]')
-                data['star_rating'] = rating_elem.text.strip()
-            except:
-                pass
+            # Check for other CAPTCHAs
+            if self.check_for_captcha():
+                # If it's not Cloudflare, it might be a different CAPTCHA
+                page_source = self.driver.page_source.lower()
+                if 'cloudflare' not in page_source:
+                    print("  ⚠️  CAPTCHA detected on profile page, skipping...")
+                    if not self.headless:
+                        print("  Please solve the CAPTCHA manually...")
+                        input("  Press Enter after solving to continue...")
+                    else:
+                        return data
             
-            # Extract review count - specific class: RatingsLockup_reviewCount
-            try:
-                review_elem = self.driver.find_element(By.CSS_SELECTOR, 'span[class*="RatingsLockup_reviewCount"]')
-                review_text = review_elem.text.strip()
-                # Extract number from text like "(104)"
-                review_match = re.search(r'\((\d+)\)', review_text)
-                if review_match:
-                    data['num_reviews'] = review_match.group(1)
-            except:
-                pass
+            # Don't extract rating and reviews from profile page - already have them from listing page
+            # This prevents duplication
+            # Rating and reviews are already extracted from the listing card
             
-            # Extract address - specific class: SubComponents_subHeader__JUXIF
+            # Extract address - from contact information section
             try:
-                address_elem = self.driver.find_element(By.CSS_SELECTOR, 'h3[class*="SubComponents_subHeader"]')
+                # Look for address in h3 with class SubComponents_subHeader__JUXIF within contact information
+                address_elem = self.driver.find_element(By.CSS_SELECTOR, 
+                    'div[data-testid="contact-information-component"] h3.SubComponents_subHeader__JUXIF'
+                )
                 address_text = address_elem.text.strip()
-                # Check if it looks like an address (contains street number and state)
-                if re.search(r'\d+.*(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl|Ave).*,\s*[A-Z]{2}', address_text):
+                if address_text and len(address_text) > 10:
                     data['address'] = address_text
             except:
-                pass
+                # Fallback: try without data-testid
+                try:
+                    address_elem = self.driver.find_element(By.CSS_SELECTOR, 'h3.SubComponents_subHeader__JUXIF')
+                    address_text = address_elem.text.strip()
+                    if address_text and len(address_text) > 10:
+                        data['address'] = address_text
+                except:
+                    pass
             
-            # Extract website - specific class: SubComponents_link__Gpwoa
+            # Extract website - from contact information section
             try:
-                website_link = self.driver.find_element(By.CSS_SELECTOR, 'a[class*="SubComponents_link"]')
+                # Look for website link in a tag with class SubComponents_link__Gpwoa within contact information
+                website_link = self.driver.find_element(By.CSS_SELECTOR, 
+                    'div[data-testid="contact-information-component"] a.SubComponents_link__Gpwoa'
+                )
                 href = website_link.get_attribute('href')
                 if href and href.startswith('http') and not any(skip in href.lower() for skip in [
                     'homeadvisor.com', 'facebook.com', 'twitter.com', 
-                    'linkedin.com', 'instagram.com', 'youtube.com'
+                    'linkedin.com', 'instagram.com', 'youtube.com', 'pinterest.com'
                 ]):
                     data['website'] = href
             except:
-                pass
+                # Fallback: try without data-testid
+                try:
+                    website_link = self.driver.find_element(By.CSS_SELECTOR, 'a.SubComponents_link__Gpwoa')
+                    href = website_link.get_attribute('href')
+                    if href and href.startswith('http') and not any(skip in href.lower() for skip in [
+                        'homeadvisor.com', 'facebook.com', 'twitter.com', 
+                        'linkedin.com', 'instagram.com', 'youtube.com', 'pinterest.com'
+                    ]):
+                        data['website'] = href
+                except:
+                    pass
             
             # Extract phone number - click the button with id="view-phone-number"
             try:
@@ -779,19 +972,36 @@ class HomeAdvisorScraper:
                     self.driver.execute_script("arguments[0].click();", phone_button)
                     time.sleep(2)  # Wait for phone number to appear
                     
-                    # Now extract the phone number from the updated page using Selenium
+                    # Now extract the phone number from the button that appears after clicking
                     try:
-                        # Check if phone number is now visible in button text
-                        phone_button_after = self.driver.find_element(By.ID, "view-phone-number")
-                        button_text = phone_button_after.text
-                        # Check if phone number is now visible in button text
-                        phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', button_text)
-                        if phone_match:
-                            phone = re.sub(r'[^\d]', '', phone_match.group(0))
-                            if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
-                                if len(phone) == 11:
-                                    phone = phone[1:]
-                                data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                        # Look for the phone button with data-testid="angi_button" and class containing BusinessProfileHero_phoneNumber
+                        phone_button_after = self.driver.find_element(By.CSS_SELECTOR, 
+                            'button[data-testid="angi_button"][class*="BusinessProfileHero_phoneNumber"], '
+                            'button[class*="BusinessProfileHero_phoneNumber"]'
+                        )
+                        
+                        # Try to get phone from name attribute first (most reliable)
+                        phone_name = phone_button_after.get_attribute('name')
+                        if phone_name:
+                            # Extract phone number from name attribute (format: "(732) 416-7719")
+                            phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', phone_name)
+                            if phone_match:
+                                phone = re.sub(r'[^\d]', '', phone_match.group(0))
+                                if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                                    if len(phone) == 11:
+                                        phone = phone[1:]
+                                    data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                        
+                        # If not found in name, try button text
+                        if not data['phone']:
+                            button_text = phone_button_after.text
+                            phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', button_text)
+                            if phone_match:
+                                phone = re.sub(r'[^\d]', '', phone_match.group(0))
+                                if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                                    if len(phone) == 11:
+                                        phone = phone[1:]
+                                    data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
                     except:
                         pass
                     

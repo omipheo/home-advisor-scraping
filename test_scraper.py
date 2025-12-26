@@ -22,12 +22,42 @@ def test_single_page():
         listings = scraper.scrape_listings_from_page(1)
         
         print(f"\nFound {len(listings)} listings:")
-        for i, listing in enumerate(listings[:5], 1):  # Show first 5
+        
+        # Test scraping address, website, and phone for first few listings
+        test_count = min(3, len(listings))  # Test first 3 listings
+        print(f"\nScraping detailed info (address, website, phone) for first {test_count} listings...")
+        
+        for i, listing in enumerate(listings[:test_count], 1):
             print(f"\n{i}. {listing.get('business_name', 'N/A')}")
             print(f"   Rating: {listing.get('star_rating', 'N/A')}")
             print(f"   Reviews: {listing.get('num_reviews', 'N/A')}")
-            print(f"   Address: {listing.get('address', 'N/A')}")
-            print(f"   Website: {listing.get('website', 'N/A')}")
+            
+            # Get profile URL
+            profile_url = listing.get('profile_url')
+            if profile_url:
+                print(f"   Profile URL: {profile_url}")
+                print(f"   Fetching address, website, and phone...")
+                
+                # Visit profile page to get address, website, and phone
+                profile_data = scraper.get_data_from_profile_page(profile_url)
+                
+                # Merge profile data with listing data
+                if profile_data.get('address'):
+                    listing['address'] = profile_data['address']
+                if profile_data.get('website'):
+                    listing['website'] = profile_data['website']
+                if profile_data.get('phone'):
+                    listing['phone'] = profile_data['phone']
+                
+                print(f"   ✓ Address: {listing.get('address', 'N/A')}")
+                print(f"   ✓ Website: {listing.get('website', 'N/A')}")
+                print(f"   ✓ Phone: {listing.get('phone', 'N/A')}")
+            else:
+                print(f"   ⚠️  No profile URL found")
+        
+        # Show remaining listings without detailed scraping
+        if len(listings) > test_count:
+            print(f"\n... and {len(listings) - test_count} more listings (detailed info not fetched)")
         
         if listings:
             print(f"\n✓ Scraper is working! Found {len(listings)} listings on page 1.")
