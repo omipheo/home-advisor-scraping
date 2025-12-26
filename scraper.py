@@ -643,7 +643,7 @@ class HomeAdvisorScraper:
             return None
     
     def get_data_from_profile_page(self, profile_url):
-        """Extract all data from a business profile page"""
+        """Extract all data from a business profile page using specific selectors"""
         data = {
             'website': '',
             'phone': '',
@@ -665,96 +665,125 @@ class HomeAdvisorScraper:
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
             
-            # Extract website from Contact Information section
-            contact_section = soup.find('div', class_=re.compile(r'contact', re.I))
-            if not contact_section:
-                # Try alternative selectors
-                contact_section = soup.find('section', class_=re.compile(r'contact', re.I))
-            
-            if contact_section:
-                # Look for website link
-                website_link = contact_section.find('a', href=re.compile(r'^https?://', re.I))
-                if website_link:
-                    href = website_link.get('href', '')
-                    if href and not any(skip in href.lower() for skip in [
-                        'homeadvisor.com', 'facebook.com', 'twitter.com', 
-                        'linkedin.com', 'instagram.com', 'youtube.com'
-                    ]):
-                        data['website'] = href
-                
-                # Extract address
-                address_elem = contact_section.find(['div', 'span', 'p'], class_=re.compile(r'address', re.I))
-                if address_elem:
-                    address_text = address_elem.get_text(strip=True)
-                    if address_text and len(address_text) > 10:
-                        data['address'] = address_text
-                else:
-                    # Try to find address in text
-                    text = contact_section.get_text()
-                    address_match = re.search(r'\d+\s+[A-Za-z0-9\s,]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)[\s,]+[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}', text)
-                    if address_match:
-                        data['address'] = address_match.group(0).strip()
-            
-            # Extract rating and reviews
-            rating_elem = soup.find(['div', 'span'], class_=re.compile(r'rating|star', re.I))
+            # Extract rating - using specific class: RatingsLockup_ratingNumber__2CoLI
+            rating_elem = soup.find('span', class_=re.compile(r'RatingsLockup_ratingNumber', re.I))
             if rating_elem:
-                rating_text = rating_elem.get_text()
-                # Look for pattern like "4.8 (104)"
-                rating_match = re.search(r'(\d+\.?\d*)\s*\((\d+)\)', rating_text)
-                if rating_match:
-                    data['star_rating'] = rating_match.group(1)
-                    data['num_reviews'] = rating_match.group(2)
+                data['star_rating'] = rating_elem.get_text(strip=True)
             
-            # Extract phone number - need to click the "Phone number" button
+            # Extract review count - using specific class: RatingsLockup_reviewCount
+            review_elem = soup.find('span', class_=re.compile(r'RatingsLockup_reviewCount', re.I))
+            if review_elem:
+                review_text = review_elem.get_text(strip=True)
+                # Extract number from text like "(104)"
+                review_match = re.search(r'\((\d+)\)', review_text)
+                if review_match:
+                    data['num_reviews'] = review_match.group(1)
+            
+            # Extract address - using specific class: SubComponents_subHeader__JUXIF
+            address_elem = soup.find('h3', class_=re.compile(r'SubComponents_subHeader', re.I))
+            if address_elem:
+                address_text = address_elem.get_text(strip=True)
+                # Check if it looks like an address (contains street number and state)
+                if re.search(r'\d+.*(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl|Ave).*,\s*[A-Z]{2}', address_text):
+                    data['address'] = address_text
+            
+            # Extract website - using specific class: SubComponents_link__Gpwoa
+            website_link = soup.find('a', class_=re.compile(r'SubComponents_link', re.I))
+            if website_link:
+                href = website_link.get('href', '')
+                if href and href.startswith('http') and not any(skip in href.lower() for skip in [
+                    'homeadvisor.com', 'facebook.com', 'twitter.com', 
+                    'linkedin.com', 'instagram.com', 'youtube.com'
+                ]):
+                    data['website'] = href
+            
+            # Extract phone number - click the button with id="view-phone-number"
             try:
-                phone_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Phone number')] | //a[contains(text(), 'Phone number')] | //div[contains(text(), 'Phone number')]")
+                phone_button = self.driver.find_element(By.ID, "view-phone-number")
                 if phone_button:
                     print("  Clicking 'Phone number' button...")
+                    # Scroll to button first
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", phone_button)
+                    time.sleep(1)
+                    # Click using JavaScript to avoid interception
                     self.driver.execute_script("arguments[0].click();", phone_button)
-                    time.sleep(2)
+                    time.sleep(2)  # Wait for phone number to appear
                     
-                    # Now extract the phone number
+                    # Now extract the phone number from the updated page
                     html_after_click = self.driver.page_source
                     soup_after = BeautifulSoup(html_after_click, 'lxml')
                     
-                    # Look for phone number patterns
-                    phone_patterns = [
-                        r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
-                        r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
-                    ]
-                    
-                    page_text = soup_after.get_text()
-                    for pattern in phone_patterns:
-                        matches = re.findall(pattern, page_text)
-                        if matches:
-                            phone = re.sub(r'[^\d]', '', matches[0])
+                    # Look for phone number - it might be in the button text or nearby
+                    phone_button_after = soup_after.find('button', id='view-phone-number')
+                    if phone_button_after:
+                        button_text = phone_button_after.get_text()
+                        # Check if phone number is now visible in button text
+                        phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', button_text)
+                        if phone_match:
+                            phone = re.sub(r'[^\d]', '', phone_match.group(0))
                             if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
                                 if len(phone) == 11:
                                     phone = phone[1:]
                                 data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
-                                break
+                    
+                    # Also search the entire page for phone patterns
+                    if not data['phone']:
+                        page_text = soup_after.get_text()
+                        phone_patterns = [
+                            r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+                            r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+                        ]
+                        for pattern in phone_patterns:
+                            matches = re.findall(pattern, page_text)
+                            if matches:
+                                # Filter out common false positives
+                                for match in matches:
+                                    phone = re.sub(r'[^\d]', '', match)
+                                    if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                                        if len(phone) == 11:
+                                            phone = phone[1:]
+                                        # Check if it's a valid phone number (not a date, etc.)
+                                        if phone[0] in ['2', '3', '4', '5', '6', '7', '8', '9']:
+                                            data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                                            break
+                                if data['phone']:
+                                    break
             except Exception as e:
                 print(f"  Could not click phone button: {e}")
-                # Try to find phone in page source anyway
-                page_text = soup.get_text()
-                phone_patterns = [
-                    r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
-                    r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
-                ]
-                for pattern in phone_patterns:
-                    matches = re.findall(pattern, page_text)
-                    if matches:
-                        phone = re.sub(r'[^\d]', '', matches[0])
-                        if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
-                            if len(phone) == 11:
-                                phone = phone[1:]
-                            data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
-                            break
+                # Try alternative selector
+                try:
+                    phone_button = self.driver.find_element(By.XPATH, "//button[@id='view-phone-number'] | //button[contains(@aria-label, 'phone number')]")
+                    if phone_button:
+                        print("  Clicking 'Phone number' button (alternative method)...")
+                        self.driver.execute_script("arguments[0].click();", phone_button)
+                        time.sleep(2)
+                        # Extract phone as above
+                        html_after_click = self.driver.page_source
+                        soup_after = BeautifulSoup(html_after_click, 'lxml')
+                        page_text = soup_after.get_text()
+                        phone_patterns = [
+                            r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+                            r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+                        ]
+                        for pattern in phone_patterns:
+                            matches = re.findall(pattern, page_text)
+                            if matches:
+                                for match in matches:
+                                    phone = re.sub(r'[^\d]', '', match)
+                                    if len(phone) == 10 and phone[0] in ['2', '3', '4', '5', '6', '7', '8', '9']:
+                                        data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                                        break
+                                if data['phone']:
+                                    break
+                except:
+                    pass
             
             return data
             
         except Exception as e:
             print(f"  Error extracting data from profile page: {e}")
+            import traceback
+            traceback.print_exc()
             return data
     
     def enrich_business_data(self, business_data):
