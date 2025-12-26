@@ -31,7 +31,16 @@ def test_single_page():
         
         if listings:
             print(f"\n✓ Scraper is working! Found {len(listings)} listings on page 1.")
-            print("You can now run the full scraper with: python scraper.py")
+            print("\nTesting Google Sheet write...")
+            
+            # Write first listing to sheet as a test
+            if listings:
+                test_business = listings[0]
+                scraper.write_to_sheet([test_business])
+                print(f"✓ Wrote test listing '{test_business.get('business_name', 'Unknown')}' to your Google Sheet")
+                print("  Check your sheet to verify it appeared!")
+            
+            print("\nYou can now run the full scraper with: python scraper.py")
         else:
             print("\n✗ No listings found. The page structure may have changed.")
             print("You may need to update the selectors in scraper.py")
