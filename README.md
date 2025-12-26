@@ -120,6 +120,26 @@ You can modify these variables in `scraper.py`:
 
 ## Troubleshooting
 
+### ChromeDriver Error: "[WinError 193] %1 is not a valid Win32 application"
+
+This error means ChromeDriver is corrupted or there's an architecture mismatch. Fix it by:
+
+1. **Run the fix script** (easiest):
+   ```bash
+   python fix_chromedriver.py
+   ```
+
+2. **Or manually clear cache**:
+   - Delete the folder: `%USERPROFILE%\.wdm`
+   - Re-run the scraper (it will re-download ChromeDriver)
+
+3. **Check architecture**:
+   - Make sure you're using 64-bit Python if you have 64-bit Chrome
+   - Check Python: `python -c "import platform; print(platform.architecture())"`
+   - Check Chrome: Right-click Chrome → Properties → Details tab
+
+### Other Issues
+
 - **ChromeDriver issues**: Make sure Chrome is installed and up to date
 - **Google Sheets permission errors**: Verify the service account has access to the sheet
 - **No listings found**: HomeAdvisor may have changed their HTML structure - you may need to update the selectors in `extract_business_info()`

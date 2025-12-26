@@ -14,6 +14,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import json
 import os
 import random
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 class HomeAdvisorScraper:
@@ -76,11 +77,132 @@ class HomeAdvisorScraper:
         # Note: Google Chrome must be installed on your system
         # ChromeDriver will be automatically downloaded and managed
         try:
-            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+            # Get ChromeDriver path - ChromeDriverManager sometimes returns wrong file
+            manager_path = ChromeDriverManager().install()
+            print(f"ChromeDriverManager returned: {manager_path}")
+            
+            # Determine the directory to search
+            if os.path.isfile(manager_path):
+                driver_dir = os.path.dirname(manager_path)
+            elif os.path.isdir(manager_path):
+                driver_dir = manager_path
+            else:
+                # Path might be malformed, try to extract directory
+                driver_dir = os.path.dirname(manager_path) if os.path.dirname(manager_path) else manager_path
+            
+            # Normalize path separators (handle / vs \)
+            driver_dir = os.path.normpath(driver_dir)
+            
+            # Search for chromedriver.exe
+            driver_path = None
+            
+            # First, check the directory directly
+            if os.path.isdir(driver_dir):
+                for file in os.listdir(driver_dir):
+                    if file == 'chromedriver.exe':
+                        driver_path = os.path.join(driver_dir, file)
+                        print(f"Found ChromeDriver in directory: {driver_path}")
+                        break
+            
+            # If not found, search subdirectories (walk through the tree)
+            if not driver_path and os.path.isdir(driver_dir):
+                print(f"Searching for chromedriver.exe in: {driver_dir}")
+                for root, dirs, files in os.walk(driver_dir):
+                    for file in files:
+                        if file == 'chromedriver.exe':
+                            driver_path = os.path.join(root, file)
+                            print(f"Found ChromeDriver in subdirectory: {driver_path}")
+                            break
+                    if driver_path:
+                        break
+            
+            # Also try common variations
+            if not driver_path:
+                test_paths = [
+                    os.path.join(driver_dir, 'chromedriver.exe'),
+                    driver_dir.replace('THIRD_PARTY_NOTICES.chromedriver', 'chromedriver.exe'),
+                    os.path.join(os.path.dirname(driver_dir), 'chromedriver.exe'),
+                ]
+                for test_path in test_paths:
+                    if os.path.exists(test_path) and test_path.endswith('.exe'):
+                        driver_path = test_path
+                        print(f"Found ChromeDriver at: {driver_path}")
+                        break
+            
+            if not driver_path or not os.path.exists(driver_path):
+                print("ChromeDriver executable not found, re-downloading...")
+                # Clear cache and try again
+                import shutil
+                from pathlib import Path
+                cache_path = Path.home() / ".wdm"
+                if cache_path.exists():
+                    try:
+                        shutil.rmtree(cache_path)
+                        print("Cache cleared, re-downloading...")
+                    except:
+                        pass
+                
+                manager_path = ChromeDriverManager().install()
+                print(f"Re-download returned: {manager_path}")
+                
+                # Extract directory from the path
+                if os.path.isfile(manager_path):
+                    driver_dir = os.path.dirname(manager_path)
+                elif os.path.isdir(manager_path):
+                    driver_dir = manager_path
+                else:
+                    # Try to find the directory
+                    parts = manager_path.split(os.sep)
+                    for i in range(len(parts), 0, -1):
+                        test_dir = os.sep.join(parts[:i])
+                        if os.path.isdir(test_dir):
+                            driver_dir = test_dir
+                            break
+                    else:
+                        driver_dir = os.path.dirname(manager_path)
+                
+                # Search for chromedriver.exe
+                if os.path.isdir(driver_dir):
+                    # Search current directory and subdirectories
+                    for root, dirs, files in os.walk(driver_dir):
+                        for file in files:
+                            if file == 'chromedriver.exe':
+                                driver_path = os.path.join(root, file)
+                                break
+                        if driver_path:
+                            break
+            
+            if not driver_path or not os.path.exists(driver_path):
+                raise Exception(f"Could not find chromedriver.exe executable.\nSearched in: {driver_dir if 'driver_dir' in locals() else 'unknown'}\nManager returned: {manager_path if 'manager_path' in locals() else 'unknown'}")
+            
+            if not driver_path.endswith('.exe'):
+                raise Exception(f"Invalid ChromeDriver path (not .exe): {driver_path}")
+            
+            print(f"Using ChromeDriver at: {driver_path}")
+            
+            self.driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
             print("✓ Chrome browser initialized successfully")
+        except OSError as e:
+            if "WinError 193" in str(e) or "not a valid Win32 application" in str(e):
+                print(f"✗ Error: ChromeDriver is corrupted or wrong architecture")
+                print("\nThis usually means:")
+                print("  - ChromeDriver cache is corrupted")
+                print("  - Architecture mismatch (32-bit vs 64-bit)")
+                print("\nTo fix this, run:")
+                print("  python fix_chromedriver.py")
+                print("\nOr manually:")
+                print("  1. Delete folder: %USERPROFILE%\\.wdm")
+                print("  2. Make sure you're using 64-bit Python if you have 64-bit Chrome")
+                print("  3. Re-run the script")
+            else:
+                print(f"✗ Error initializing Chrome browser: {e}")
+            raise
         except Exception as e:
             print(f"✗ Error initializing Chrome browser: {e}")
-            print("Make sure Google Chrome is installed on your system.")
+            print("\nTroubleshooting:")
+            print("1. Make sure Google Chrome is installed: https://www.google.com/chrome/")
+            print("2. Run: python fix_chromedriver.py")
+            print("3. Make sure Python and Chrome are both 64-bit (or both 32-bit)")
             raise
         
         # Execute script to remove webdriver property (anti-detection)
