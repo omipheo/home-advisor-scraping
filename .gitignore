@@ -1,0 +1,13 @@
+homeadvisorelizabethscraping-613984138d99.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.log
+.DS_Store
+homeVenv/
+
