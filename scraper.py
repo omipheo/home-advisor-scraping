@@ -696,7 +696,7 @@ class HomeAdvisorScraper:
         return business_data
     
     def write_to_sheet(self, businesses):
-        """Write business data to Google Sheet"""
+        """Write business data to Google Sheet with retry logic"""
         if not businesses:
             return
         
@@ -714,10 +714,26 @@ class HomeAdvisorScraper:
             ]
             rows.append(row)
         
-        # Append to sheet
+        # Append to sheet with retry logic
         if rows:
-            self.sheet.append_rows(rows)
-            print(f"Wrote {len(rows)} businesses to sheet")
+            max_retries = 3
+            retry_delay = 2
+            
+            for attempt in range(max_retries):
+                try:
+                    self.sheet.append_rows(rows)
+                    print(f"Wrote {len(rows)} businesses to sheet")
+                    return  # Success, exit function
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"  Error writing to sheet (attempt {attempt + 1}/{max_retries}): {e}")
+                        print(f"  Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        print(f"  ✗ Failed to write to sheet after {max_retries} attempts: {e}")
+                        print(f"  Data will be retried on next batch write")
+                        raise  # Re-raise on final attempt
     
     def scrape_all_pages(self, total_pages=105, start_page=1):
         """Scrape all pages and collect data"""
@@ -737,12 +753,21 @@ class HomeAdvisorScraper:
             # Enrich each business with phone and email
             for i, business in enumerate(listings, 1):
                 print(f"\nProcessing business {i}/{len(listings)}: {business.get('business_name', 'Unknown')}")
-                enriched = self.enrich_business_data(business)
-                all_businesses.append(enriched)
+                try:
+                    enriched = self.enrich_business_data(business)
+                    all_businesses.append(enriched)
+                except Exception as e:
+                    print(f"  Error enriching business data: {e}")
+                    # Still add the business even if enrichment failed
+                    all_businesses.append(business)
                 
                 # Write to sheet periodically (every 10 businesses)
                 if len(all_businesses) % 10 == 0:
-                    self.write_to_sheet(all_businesses[-10:])
+                    try:
+                        self.write_to_sheet(all_businesses[-10:])
+                    except Exception as e:
+                        print(f"  Warning: Could not write to sheet: {e}")
+                        print(f"  Will retry on next batch or at the end")
                 
                 # Random rate limiting to appear more human-like (2-5 seconds)
                 time.sleep(random.uniform(2, 5))
@@ -757,7 +782,11 @@ class HomeAdvisorScraper:
         
         # Final write of any remaining businesses
         if all_businesses:
-            self.write_to_sheet(all_businesses)
+            try:
+                self.write_to_sheet(all_businesses)
+            except Exception as e:
+                print(f"\n⚠️  Warning: Could not write final batch to sheet: {e}")
+                print(f"  You may need to manually export the data or check your connection")
         
         return all_businesses
     
