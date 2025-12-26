@@ -1175,11 +1175,10 @@ class HomeAdvisorScraper:
                         print(f"  Data will be retried on next batch write")
                         raise  # Re-raise on final attempt
     
-    def scrape_all_pages(self, total_pages=105, start_page=4):
+    def scrape_all_pages(self, total_pages=105, start_page=1):
         """Scrape all pages and collect data"""
         all_businesses = []
-        consecutive_empty_pages = 0
-        max_consecutive_empty = 3  # Stop only after 3 consecutive empty pages
+        empty_pages_count = 0
         
         for page_num in range(start_page, total_pages + 1):
             print(f"\n{'='*50}")
@@ -1202,30 +1201,14 @@ class HomeAdvisorScraper:
                         time.sleep(5)  # Wait before retry
             
             if not listings:
-                consecutive_empty_pages += 1
-                print(f"⚠️  No listings found on page {page_num}")
-                print(f"   Consecutive empty pages: {consecutive_empty_pages}/{max_consecutive_empty}")
-                
-                # Only stop if we have multiple consecutive empty pages
-                if consecutive_empty_pages >= max_consecutive_empty:
-                    print(f"\n⚠️  Stopping: {max_consecutive_empty} consecutive empty pages detected.")
-                    print(f"   This might indicate:")
-                    print(f"   - Reached the end of available listings")
-                    print(f"   - Cloudflare blocking (try non-headless mode)")
-                    print(f"   - Page structure changed")
-                    print(f"   You can resume from page {page_num + 1} by setting START_PAGE = {page_num + 1}")
-                    break
-                else:
-                    print(f"   Continuing to next page...")
-                    time.sleep(3)  # Brief pause before next page
-                    continue
-            else:
-                # Reset counter if we found listings
-                consecutive_empty_pages = 0
+                empty_pages_count += 1
+                print(f"⚠️  No listings found on page {page_num} - skipping and continuing...")
+                print(f"   Total empty pages so far: {empty_pages_count}")
+                print(f"   Continuing to next page...")
+                time.sleep(3)  # Brief pause before next page
+                continue
             
-            # Enrich each business with phone and email (only if we have listings)
-            if not listings:
-                continue  # Skip to next page if no listings
+            # Enrich each business with phone and email
             for i, business in enumerate(listings, 1):
                 print(f"\nProcessing business {i}/{len(listings)}: {business.get('business_name', 'Unknown')}")
                 try:
@@ -1263,6 +1246,14 @@ class HomeAdvisorScraper:
                 print(f"\n⚠️  Warning: Could not write final batch to sheet: {e}")
                 print(f"  You may need to manually export the data or check your connection")
         
+        # Summary
+        print(f"\n{'='*50}")
+        print(f"Scraping Summary:")
+        print(f"  - Pages processed: {total_pages - start_page + 1}")
+        print(f"  - Empty pages skipped: {empty_pages_count}")
+        print(f"  - Total businesses collected: {len(all_businesses)}")
+        print(f"{'='*50}")
+        
         return all_businesses
     
     def close(self):
@@ -1276,7 +1267,7 @@ def main():
     GOOGLE_SHEET_ID = "1b8JUs4vGZXY7YTnmPJ9KEUqDzXufmRuRBL2u5i6NPx4"  # Your Google Sheet ID
     CREDENTIALS_FILE = "homeadvisorelizabethscraping-613984138d99.json"  # Google Service Account credentials
     TOTAL_PAGES = 105
-    START_PAGE = 1  # Change this to resume from a specific page
+    START_PAGE = 7  # Change this to resume from a specific page
     HEADLESS_MODE = True  # Set to False if you want to see the browser (useful for solving CAPTCHAs)
     
     
