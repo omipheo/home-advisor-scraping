@@ -290,9 +290,22 @@ class HomeAdvisorScraper:
             listings = []
             
             # Use Selenium to find business listing cards
-            # Strategy: Find all article elements with the business card class
+            # Strategy: Find all article elements with the business card class name
             try:
+                # Find article tags with the specific class name (ProList_businessProCard__qvaeT)
+                # The article has class: "ProList_businessProCard__qvaeT  BusinessProfileCard_parentContainer__5_Ak0"
                 business_cards = self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT')
+                
+                # Alternative: If the above doesn't work, try XPath or class name directly
+                if not business_cards or len(business_cards) == 0:
+                    # Try XPath with article tag and class
+                    business_cards = self.driver.find_elements(By.XPATH, '//article[contains(@class, "ProList_businessProCard__qvaeT")]')
+                
+                if not business_cards or len(business_cards) == 0:
+                    # Fallback: try finding by class name (but this might return non-article elements)
+                    business_cards = self.driver.find_elements(By.CLASS_NAME, 'ProList_businessProCard__qvaeT')
+                    # Filter to only article elements
+                    business_cards = [card for card in business_cards if card.tag_name == 'article']
                 
                 seen_urls = set()
                 for card in business_cards:
@@ -358,20 +371,86 @@ class HomeAdvisorScraper:
             
             # Extract star rating
             try:
-                rating_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_ratingNumber__2CoLI')
-                data['star_rating'] = rating_elem.text.strip()
+                # Try desktop rating first
+                try:
+                    rating_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-desktop"] span.RatingsLockup_ratingNumber__2CoLI')
+                    rating_text = rating_elem.text.strip()
+                    if not rating_text:
+                        # Try getting textContent or innerText
+                        rating_text = rating_elem.get_attribute('textContent') or rating_elem.get_attribute('innerText')
+                    if rating_text:
+                        data['star_rating'] = rating_text.strip()
+                except:
+                    # Try mobile rating
+                    try:
+                        rating_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-mobile"] span.RatingsLockup_ratingNumber__2CoLI')
+                        rating_text = rating_elem.text.strip()
+                        if not rating_text:
+                            rating_text = rating_elem.get_attribute('textContent') or rating_elem.get_attribute('innerText')
+                        if rating_text:
+                            data['star_rating'] = rating_text.strip()
+                    except:
+                        # Fallback: try without data-testid
+                        try:
+                            rating_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_ratingNumber__2CoLI')
+                            rating_text = rating_elem.text.strip()
+                            if not rating_text:
+                                rating_text = rating_elem.get_attribute('textContent') or rating_elem.get_attribute('innerText')
+                            if rating_text:
+                                data['star_rating'] = rating_text.strip()
+                        except:
+                            # Last resort: extract from aria-label
+                            try:
+                                rating_container = card_element.find_element(By.CSS_SELECTOR, 'div[aria-label*="Rating:"]')
+                                aria_label = rating_container.get_attribute('aria-label')
+                                if aria_label:
+                                    import re
+                                    match = re.search(r'Rating:\s*([\d.]+)', aria_label)
+                                    if match:
+                                        data['star_rating'] = match.group(1)
+                            except:
+                                pass
             except:
                 pass
             
             # Extract number of reviews
             try:
-                reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_reviewCount__u0DTP')
-                # The number is inside a div
-                review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
-                reviews_text = review_div.text.strip()
-                # Remove parentheses if present
-                reviews_text = reviews_text.strip('()')
-                data['num_reviews'] = reviews_text
+                # Try desktop reviews first
+                try:
+                    reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-desktop"] span.RatingsLockup_reviewCount__u0DTP')
+                    # The number is inside a div
+                    review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
+                    reviews_text = review_div.text.strip()
+                    if not reviews_text:
+                        reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
+                    # Remove parentheses if present
+                    if reviews_text:
+                        reviews_text = reviews_text.strip('()')
+                        data['num_reviews'] = reviews_text.strip()
+                except:
+                    # Try mobile reviews
+                    try:
+                        reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'div[data-testid="star-rating-mobile"] span.RatingsLockup_reviewCount__u0DTP')
+                        review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
+                        reviews_text = review_div.text.strip()
+                        if not reviews_text:
+                            reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
+                        if reviews_text:
+                            reviews_text = reviews_text.strip('()')
+                            data['num_reviews'] = reviews_text.strip()
+                    except:
+                        # Fallback: try without data-testid
+                        try:
+                            reviews_elem = card_element.find_element(By.CSS_SELECTOR, 'span.RatingsLockup_reviewCount__u0DTP')
+                            review_div = reviews_elem.find_element(By.TAG_NAME, 'div')
+                            reviews_text = review_div.text.strip()
+                            if not reviews_text:
+                                reviews_text = review_div.get_attribute('textContent') or review_div.get_attribute('innerText')
+                            if reviews_text:
+                                reviews_text = reviews_text.strip('()')
+                                data['num_reviews'] = reviews_text.strip()
+                        except:
+                            pass
             except:
                 pass
             
