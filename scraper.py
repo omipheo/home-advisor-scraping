@@ -272,16 +272,34 @@ class HomeAdvisorScraper:
                     print("   Please solve the CAPTCHA manually in the browser window...")
                     input("   Press Enter after solving the CAPTCHA to continue...")
             
-            # Wait for listings to appear
+            # Wait for listings to appear - wait for specific HomeAdvisor elements
             try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div, article, section"))
+                # Wait for business listings to load
+                WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/pro/'], div[class*='result'], div[class*='listing'], article"))
                 )
+                # Additional wait for dynamic content
+                time.sleep(3)
             except:
-                pass
+                print("Warning: Timeout waiting for page elements, proceeding anyway...")
+            
+            # Scroll to load more content
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(1)
             
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
+            
+            # Debug: Save HTML for inspection (only on first page)
+            if page_num == 1:
+                try:
+                    with open('debug_page1.html', 'w', encoding='utf-8') as f:
+                        f.write(html)
+                    print("Debug: Saved page HTML to debug_page1.html")
+                except:
+                    pass
             
             listings = []
             
@@ -289,11 +307,41 @@ class HomeAdvisorScraper:
             listing_containers = []
             
             # Strategy 1: Look for links to /pro/ pages (HomeAdvisor business profile links)
+            # But filter out promotional/ad links
             pro_links = soup.find_all('a', href=re.compile(r'/pro/', re.I))
             for link in pro_links:
-                parent = link.find_parent(['div', 'article', 'section', 'li'])
-                if parent and parent not in listing_containers:
-                    listing_containers.append(parent)
+                link_text = link.get_text(strip=True).lower()
+                href = link.get('href', '').lower()
+                
+                # Filter out ads and promotional content
+                skip_keywords = [
+                    'join as a pro',
+                    'sign up',
+                    'become a pro',
+                    'signup',
+                    'register',
+                    'advertisement',
+                    'ad',
+                    'sponsored'
+                ]
+                
+                if any(keyword in link_text for keyword in skip_keywords):
+                    continue
+                
+                if any(keyword in href for keyword in ['signup', 'register', 'join']):
+                    continue
+                
+                # Find parent container
+                parent = link.find_parent(['div', 'article', 'section', 'li', 'h2', 'h3'])
+                if parent:
+                    # Make sure it's not nested in another listing
+                    is_nested = False
+                    for existing in listing_containers:
+                        if parent in existing.descendants or parent == existing:
+                            is_nested = True
+                            break
+                    if not is_nested:
+                        listing_containers.append(parent)
             
             # Strategy 2: Look for common HomeAdvisor class patterns
             if not listing_containers:
@@ -337,8 +385,34 @@ class HomeAdvisorScraper:
             for container in unique_containers:
                 try:
                     business_data = self.extract_business_info(container)
-                    if business_data and business_data.get('business_name'):
-                        listings.append(business_data)
+                    business_name = business_data.get('business_name', '').lower()
+                    
+                    # Filter out ads and promotional content
+                    skip_keywords = [
+                        'join as a pro',
+                        'sign up',
+                        'become a pro',
+                        'signup',
+                        'register',
+                        'advertisement',
+                        'ad',
+                        'sponsored',
+                        'get started',
+                        'learn more'
+                    ]
+                    
+                    if business_name and any(keyword in business_name for keyword in skip_keywords):
+                        continue
+                    
+                    # Must have a business name and at least some other data
+                    if business_data and business_name and len(business_name) > 2:
+                        # Prefer listings with more data (rating, reviews, address)
+                        if (business_data.get('star_rating') or 
+                            business_data.get('num_reviews') or 
+                            business_data.get('address')):
+                            listings.append(business_data)
+                        elif business_name:  # Still add if it has a name
+                            listings.append(business_data)
                 except Exception as e:
                     print(f"Error extracting listing: {e}")
                     continue
@@ -369,7 +443,10 @@ class HomeAdvisorScraper:
         # Strategy 1: Look for /pro/ links (most reliable)
         pro_link = container.find('a', href=re.compile(r'/pro/', re.I))
         if pro_link:
-            data['business_name'] = pro_link.get_text(strip=True)
+            name_text = pro_link.get_text(strip=True)
+            # Filter out promotional text
+            if name_text and not any(skip in name_text.lower() for skip in ['join', 'sign up', 'become', 'register']):
+                data['business_name'] = name_text
         
         # Strategy 2: Look for headings
         if not data['business_name']:
