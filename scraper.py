@@ -439,14 +439,24 @@ class HomeAdvisorScraper:
         
         container_text = container.get_text()
         
-        # Extract business name - multiple strategies
-        # Strategy 1: Look for /pro/ links (most reliable)
-        pro_link = container.find('a', href=re.compile(r'/pro/', re.I))
+        # Extract business name and profile URL - multiple strategies
+        # Strategy 1: Look for /pro/ or /rated. links (most reliable)
+        pro_link = container.find('a', href=re.compile(r'/pro/|/rated\.', re.I))
         if pro_link:
             name_text = pro_link.get_text(strip=True)
             # Filter out promotional text
             if name_text and not any(skip in name_text.lower() for skip in ['join', 'sign up', 'become', 'register']):
                 data['business_name'] = name_text
+                
+            # Extract profile URL
+            href = pro_link.get('href', '')
+            if href:
+                if href.startswith('/'):
+                    data['profile_url'] = urljoin('https://www.homeadvisor.com', href)
+                elif href.startswith('http'):
+                    data['profile_url'] = href
+                else:
+                    data['profile_url'] = urljoin('https://www.homeadvisor.com', href)
         
         # Strategy 2: Look for headings
         if not data['business_name']:
@@ -632,50 +642,144 @@ class HomeAdvisorScraper:
             print(f"  Error searching Google: {e}")
             return None
     
-    def get_website_from_profile(self, business_name):
-        """Get website URL from HomeAdvisor business profile page"""
+    def get_data_from_profile_page(self, profile_url):
+        """Extract all data from a business profile page"""
+        data = {
+            'website': '',
+            'phone': '',
+            'address': '',
+            'star_rating': '',
+            'num_reviews': ''
+        }
+        
         try:
-            # Search for the business on HomeAdvisor
-            search_url = f"https://www.homeadvisor.com/search.html?query={requests.utils.quote(business_name)}"
-            self.driver.get(search_url)
-            time.sleep(3)
+            print(f"  Visiting profile page: {profile_url}")
+            self.driver.get(profile_url)
+            time.sleep(random.uniform(3, 5))
             
-            # Look for the first /pro/ link
-            pro_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/pro/"]')
-            if pro_links:
-                profile_url = pro_links[0].get_attribute('href')
-                if profile_url:
-                    # Visit the profile page
-                    self.driver.get(profile_url)
-                    time.sleep(3)
+            # Check for CAPTCHA
+            if self.check_for_captcha():
+                print("  ⚠️  CAPTCHA detected on profile page, skipping...")
+                return data
+            
+            html = self.driver.page_source
+            soup = BeautifulSoup(html, 'lxml')
+            
+            # Extract website from Contact Information section
+            contact_section = soup.find('div', class_=re.compile(r'contact', re.I))
+            if not contact_section:
+                # Try alternative selectors
+                contact_section = soup.find('section', class_=re.compile(r'contact', re.I))
+            
+            if contact_section:
+                # Look for website link
+                website_link = contact_section.find('a', href=re.compile(r'^https?://', re.I))
+                if website_link:
+                    href = website_link.get('href', '')
+                    if href and not any(skip in href.lower() for skip in [
+                        'homeadvisor.com', 'facebook.com', 'twitter.com', 
+                        'linkedin.com', 'instagram.com', 'youtube.com'
+                    ]):
+                        data['website'] = href
+                
+                # Extract address
+                address_elem = contact_section.find(['div', 'span', 'p'], class_=re.compile(r'address', re.I))
+                if address_elem:
+                    address_text = address_elem.get_text(strip=True)
+                    if address_text and len(address_text) > 10:
+                        data['address'] = address_text
+                else:
+                    # Try to find address in text
+                    text = contact_section.get_text()
+                    address_match = re.search(r'\d+\s+[A-Za-z0-9\s,]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)[\s,]+[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}', text)
+                    if address_match:
+                        data['address'] = address_match.group(0).strip()
+            
+            # Extract rating and reviews
+            rating_elem = soup.find(['div', 'span'], class_=re.compile(r'rating|star', re.I))
+            if rating_elem:
+                rating_text = rating_elem.get_text()
+                # Look for pattern like "4.8 (104)"
+                rating_match = re.search(r'(\d+\.?\d*)\s*\((\d+)\)', rating_text)
+                if rating_match:
+                    data['star_rating'] = rating_match.group(1)
+                    data['num_reviews'] = rating_match.group(2)
+            
+            # Extract phone number - need to click the "Phone number" button
+            try:
+                phone_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Phone number')] | //a[contains(text(), 'Phone number')] | //div[contains(text(), 'Phone number')]")
+                if phone_button:
+                    print("  Clicking 'Phone number' button...")
+                    self.driver.execute_script("arguments[0].click();", phone_button)
+                    time.sleep(2)
                     
-                    # Look for website link
-                    website_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href^="http"]')
-                    for link in website_links:
-                        href = link.get_attribute('href')
-                        if href and not any(skip in href.lower() for skip in ['homeadvisor.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com']):
-                            return href
+                    # Now extract the phone number
+                    html_after_click = self.driver.page_source
+                    soup_after = BeautifulSoup(html_after_click, 'lxml')
+                    
+                    # Look for phone number patterns
+                    phone_patterns = [
+                        r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+                        r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+                    ]
+                    
+                    page_text = soup_after.get_text()
+                    for pattern in phone_patterns:
+                        matches = re.findall(pattern, page_text)
+                        if matches:
+                            phone = re.sub(r'[^\d]', '', matches[0])
+                            if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                                if len(phone) == 11:
+                                    phone = phone[1:]
+                                data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                                break
+            except Exception as e:
+                print(f"  Could not click phone button: {e}")
+                # Try to find phone in page source anyway
+                page_text = soup.get_text()
+                phone_patterns = [
+                    r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+                    r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+                ]
+                for pattern in phone_patterns:
+                    matches = re.findall(pattern, page_text)
+                    if matches:
+                        phone = re.sub(r'[^\d]', '', matches[0])
+                        if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                            if len(phone) == 11:
+                                phone = phone[1:]
+                            data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                            break
             
-            return None
+            return data
+            
         except Exception as e:
-            print(f"  Error getting website from profile: {e}")
-            return None
+            print(f"  Error extracting data from profile page: {e}")
+            return data
     
     def enrich_business_data(self, business_data):
-        """Enrich business data with phone and email"""
+        """Enrich business data by visiting the profile page"""
+        profile_url = business_data.get('profile_url', '')
+        
+        # If we have a profile URL, visit it to get all the data
+        if profile_url:
+            profile_data = self.get_data_from_profile_page(profile_url)
+            
+            # Merge profile data into business data
+            if profile_data.get('website'):
+                business_data['website'] = profile_data['website']
+            if profile_data.get('phone'):
+                business_data['phone'] = profile_data['phone']
+            if profile_data.get('address'):
+                business_data['address'] = profile_data['address']
+            if profile_data.get('star_rating'):
+                business_data['star_rating'] = profile_data['star_rating']
+            if profile_data.get('num_reviews'):
+                business_data['num_reviews'] = profile_data['num_reviews']
+        
+        # If we still don't have phone, try to find it on the website
         website = business_data.get('website', '')
-        
-        # If no website found, try to get it from HomeAdvisor profile
-        if not website:
-            business_name = business_data.get('business_name', '')
-            if business_name:
-                print(f"  No website in listing, trying to get from profile...")
-                website = self.get_website_from_profile(business_name)
-                if website:
-                    business_data['website'] = website
-        
-        # Find phone on website
-        if website:
+        if website and not business_data.get('phone'):
             phone = self.find_phone_on_website(website)
             if phone:
                 business_data['phone'] = phone
@@ -687,8 +791,9 @@ class HomeAdvisorScraper:
                     phone = self.search_google_for_phone(business_name, address)
                     if phone:
                         business_data['phone'] = phone
-            
-            # Find email on website (only if phone was found or we have website)
+        
+        # Find email on website if we have one
+        if website:
             email = self.find_email_on_website(website)
             if email:
                 business_data['email'] = email
