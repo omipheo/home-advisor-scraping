@@ -4,7 +4,9 @@ This script scrapes business listings from HomeAdvisor and enriches them with co
 
 ## Features
 
-- Scrapes all 105 pages of HomeAdvisor listings for Air Conditioning businesses in Elizabeth, NJ
+- **Flexible URL Support**: Enter any HomeAdvisor category/location URL to scrape
+- **Automatic Page Detection**: Automatically detects the total number of pages to scrape
+- **Multi-City Support**: Easily scrape different cities by running with different URLs
 - Extracts: business name, star rating, number of reviews, address, website
 - Visits each business website to find phone numbers and emails
 - Falls back to Google search if phone number not found on website
@@ -46,6 +48,23 @@ pip install -r requirements.txt
 - Make sure Chrome is up to date for best compatibility
 
 ## Usage
+
+### Option 1: GUI (Recommended)
+
+The easiest way to use the scraper is with the graphical interface:
+
+```bash
+python scraper_gui.py
+```
+
+This will open a window where you can:
+- Enter any HomeAdvisor URL
+- Set the starting page
+- Choose headless mode (no browser window)
+- See real-time progress in the log
+- Stop the scraper if needed
+
+### Option 2: Command Line
 
 1. Make sure `homeadvisorelizabethscraping-613984138d99.json` is in the project root directory
 
@@ -90,19 +109,62 @@ The scraper prints messages like:
 - `"Sheet initialized with headers"` - confirms connection worked
 
 The script will:
-- Clear the existing sheet and add headers (on first run)
-- Scrape all 105 pages from HomeAdvisor
+- Prompt you for a HomeAdvisor URL (or accept it as a command-line argument)
+- Automatically detect the total number of pages
+- Clear the existing sheet and add headers (on first run from page 1)
+- Scrape all pages from the provided URL
 - For each business, visit their website to find phone/email
 - If phone not found, search Google
 - Write data to Google Sheets in batches (every 10 businesses)
+
+## Usage
+
+### Basic Usage
+
+Run the scraper and enter a URL when prompted:
+
+```bash
+python scraper.py
+```
+
+The scraper will:
+1. Ask you for a HomeAdvisor URL (any category/location URL)
+2. Automatically detect the total number of pages
+3. Ask which page to start from (or press Enter for page 1)
+4. Scrape all businesses from that URL
+
+### Command Line Usage
+
+You can also provide the URL and start page as command-line arguments:
+
+```bash
+# Scrape from page 1
+python scraper.py "https://www.homeadvisor.com/c.Air-Conditioning.Elizabeth.NJ.-12002.html"
+
+# Resume from a specific page
+python scraper.py "https://www.homeadvisor.com/c.Air-Conditioning.Elizabeth.NJ.-12002.html" 7
+```
+
+### Multiple Cities/URLs
+
+You can scrape different cities by running the scraper multiple times with different URLs:
+
+```bash
+# Scrape Elizabeth, NJ
+python scraper.py "https://www.homeadvisor.com/c.Air-Conditioning.Elizabeth.NJ.-12002.html"
+
+# Then scrape another city
+python scraper.py "https://www.homeadvisor.com/c.Air-Conditioning.Newark.NJ.-12002.html"
+```
+
+All data will be saved to the same Google Sheet.
 
 ## Configuration
 
 You can modify these variables in `scraper.py`:
 
 - `GOOGLE_SHEET_ID`: Your Google Sheet ID (found in the URL)
-- `total_pages`: Number of pages to scrape (default: 105)
-- `start_page`: Page to start from (default: 1)
+- `HEADLESS_MODE`: Set to `False` to see the browser (useful for debugging CAPTCHAs)
 
 ## Notes
 
@@ -125,11 +187,55 @@ You can modify these variables in `scraper.py`:
 - ✅ CAPTCHA detection and alerts
 - ✅ Realistic browser behavior
 
-### If You Encounter CAPTCHAs:
+### Automatic CAPTCHA Solving (Recommended)
+
+The scraper now supports **automatic CAPTCHA solving** using 2Captcha API:
+
+1. **Sign up for 2Captcha** (paid service):
+   - Go to https://2captcha.com/
+   - Create an account and add credits ($2.99 per 1000 CAPTCHAs)
+   - Get your API key from the dashboard
+
+2. **Enable automatic solving**:
+   
+   **Option A: GUI**
+   - Enter your 2Captcha API key in the "2Captcha API Key" field
+   - The key will be hidden for security
+   
+   **Option B: Command Line**
+   ```bash
+   # Set environment variable
+   set CAPTCHA_API_KEY=your_api_key_here  # Windows
+   export CAPTCHA_API_KEY=your_api_key_here  # Linux/Mac
+   
+   # Or pass as argument
+   python scraper.py "URL" 1 "your_api_key_here"
+   ```
+   
+   **Option C: Environment Variable**
+   ```bash
+   # Windows
+   set CAPTCHA_API_KEY=your_api_key_here
+   
+   # Linux/Mac
+   export CAPTCHA_API_KEY=your_api_key_here
+   ```
+
+3. **How it works**:
+   - When a Cloudflare Turnstile CAPTCHA is detected, the scraper automatically:
+     - Extracts the site key
+     - Submits it to 2Captcha
+     - Waits for the solution (usually 10-30 seconds)
+     - Injects the solution token into the page
+     - Continues scraping automatically
+
+### Manual CAPTCHA Solving (Fallback)
+
+If you don't use automatic solving:
 
 1. **Switch to non-headless mode** (see browser window):
-   - Edit `scraper.py`
-   - Change `HEADLESS_MODE = False`
+   - In GUI: Uncheck "Run in headless mode"
+   - Or edit `scraper.py` and set `HEADLESS_MODE = False`
    - Run again - you'll see the browser and can solve CAPTCHAs manually
    - The script will pause and wait for you to solve them
 

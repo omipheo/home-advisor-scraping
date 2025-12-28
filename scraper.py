@@ -18,12 +18,41 @@ import json
 import os
 import random
 from pathlib import Path
+
+# Import CAPTCHA solver (optional)
+try:
+    from captcha_solver import CaptchaSolver
+    CAPTCHA_SOLVER_AVAILABLE = True
+except ImportError:
+    CAPTCHA_SOLVER_AVAILABLE = False
+    CaptchaSolver = None
 from urllib.parse import urljoin, urlparse
 
 class HomeAdvisorScraper:
-    def __init__(self, google_sheet_id, credentials_file=None, headless=True):
-        self.base_url = "https://www.homeadvisor.com/c.Air-Conditioning.Elizabeth.NJ.-12002.html"
+    def __init__(self, base_url, google_sheet_id, credentials_file=None, headless=True, captcha_api_key=None):
+        # Store the base URL (can be any HomeAdvisor listing URL)
+        self.base_url = base_url.split('?')[0]  # Remove any existing query parameters
         self.headless = headless
+        
+        # Initialize CAPTCHA solver if API key provided
+        self.captcha_solver = None
+        if captcha_api_key:
+            if CAPTCHA_SOLVER_AVAILABLE:
+                self.captcha_solver = CaptchaSolver(api_key=captcha_api_key)
+                balance = self.captcha_solver.get_balance()
+                if balance is not None:
+                    print(f"  2Captcha balance: ${balance:.2f}")
+            else:
+                print("  ⚠️  CAPTCHA solver module not available. Install requests: pip install requests")
+        elif os.getenv('CAPTCHA_API_KEY'):
+            # Try to get from environment variable
+            if CAPTCHA_SOLVER_AVAILABLE:
+                self.captcha_solver = CaptchaSolver(api_key=os.getenv('CAPTCHA_API_KEY'))
+                balance = self.captcha_solver.get_balance()
+                if balance is not None:
+                    print(f"  2Captcha balance: ${balance:.2f}")
+            else:
+                print("  ⚠️  CAPTCHA solver module not available. Install requests: pip install requests")
         
         # Rotate Chrome User-Agents to appear more human-like
         # All user-agents are Chrome-based to match the browser being used
@@ -248,7 +277,98 @@ class HomeAdvisorScraper:
         """Generate URL for a specific page"""
         if page_num == 1:
             return self.base_url
-        return f"{self.base_url}?page={page_num}"
+        # Check if base_url already has query parameters
+        separator = '&' if '?' in self.base_url else '?'
+        return f"{self.base_url}{separator}page={page_num}"
+    
+    def detect_total_pages(self):
+        """Detect the total number of pages from the first page"""
+        try:
+            print("Detecting total number of pages...")
+            self.driver.get(self.base_url)
+            time.sleep(random.uniform(3, 5))
+            
+            # Wait for Cloudflare challenge if present
+            self.wait_for_cloudflare_challenge()
+            
+            # Wait for page to load
+            try:
+                WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                time.sleep(2)
+            except:
+                pass
+            
+            # Look for pagination summary text like "Showing 1-10 of 1050"
+            try:
+                # Try to find pagination summary element
+                pagination_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                    '.ProList_paginationSummary__dtJGF, '
+                    '[class*="pagination"], '
+                    '[class*="Pagination"], '
+                    'div:contains("Showing")'
+                )
+                
+                for elem in pagination_elements:
+                    text = elem.text.strip()
+                    # Look for pattern like "Showing 1-10 of 1050" or "1-10 of 1050"
+                    match = re.search(r'(?:Showing\s+)?\d+-\d+\s+of\s+(\d+)', text, re.IGNORECASE)
+                    if match:
+                        total_items = int(match.group(1))
+                        # HomeAdvisor typically shows 10 items per page
+                        total_pages = (total_items + 9) // 10  # Round up division
+                        print(f"  Found pagination: {text}")
+                        print(f"  Total items: {total_items}, Calculated pages: {total_pages}")
+                        return total_pages
+            except:
+                pass
+            
+            # Alternative: Look in page text
+            try:
+                page_text = self.driver.page_source
+                # Look for "Showing X-Y of Z" pattern
+                match = re.search(r'(?:Showing\s+)?\d+-\d+\s+of\s+(\d+)', page_text, re.IGNORECASE)
+                if match:
+                    total_items = int(match.group(1))
+                    total_pages = (total_items + 9) // 10
+                    print(f"  Found in page source: Total items: {total_items}, Calculated pages: {total_pages}")
+                    return total_pages
+            except:
+                pass
+            
+            # Fallback: Look for pagination links
+            try:
+                pagination_links = self.driver.find_elements(By.CSS_SELECTOR, 
+                    'a[href*="page="], button[data-page], [class*="page"]'
+                )
+                max_page = 1
+                for link in pagination_links:
+                    href = link.get_attribute('href') or ''
+                    text = link.text.strip()
+                    # Extract page number from href
+                    match = re.search(r'page=(\d+)', href)
+                    if match:
+                        page_num = int(match.group(1))
+                        max_page = max(max_page, page_num)
+                    # Or from text if it's a number
+                    elif text.isdigit():
+                        page_num = int(text)
+                        max_page = max(max_page, page_num)
+                
+                if max_page > 1:
+                    print(f"  Found pagination links: Max page number: {max_page}")
+                    return max_page
+            except:
+                pass
+            
+            print("  ⚠️  Could not detect total pages, defaulting to 1 page")
+            return 1
+            
+        except Exception as e:
+            print(f"  ⚠️  Error detecting total pages: {e}")
+            print("  Defaulting to 1 page")
+            return 1
     
     def check_for_captcha(self):
         """Check if CAPTCHA is present on the page"""
@@ -271,6 +391,8 @@ class HomeAdvisorScraper:
         try:
             # Check if we're on a Cloudflare challenge page
             page_source = self.driver.page_source.lower()
+            current_url = self.driver.current_url
+            
             is_cloudflare = any(indicator in page_source for indicator in [
                 'just a moment',
                 'cloudflare',
@@ -283,7 +405,95 @@ class HomeAdvisorScraper:
             if not is_cloudflare:
                 return True  # Not a Cloudflare page, proceed
             
-            print("  ⏳ Cloudflare challenge detected, waiting for automatic completion...")
+            print("  ⏳ Cloudflare challenge detected...")
+            
+            # Try to solve Turnstile CAPTCHA automatically if solver is available
+            if self.captcha_solver and self.captcha_solver.enabled:
+                try:
+                    # Look for Turnstile widget
+                    turnstile_widgets = self.driver.find_elements(By.CSS_SELECTOR, 
+                        'div[class*="cf-turnstile"], '
+                        'iframe[src*="challenges.cloudflare.com/turnstile"], '
+                        '[data-sitekey]'
+                    )
+                    
+                    for widget in turnstile_widgets:
+                        # Try to get site key from data-sitekey attribute
+                        site_key = widget.get_attribute('data-sitekey')
+                        if not site_key:
+                            # Try to find it in the iframe src or nearby elements
+                            try:
+                                iframe = widget.find_element(By.TAG_NAME, 'iframe')
+                                iframe_src = iframe.get_attribute('src')
+                                # Extract site key from iframe src or page source
+                                match = re.search(r'sitekey=([^&]+)', iframe_src or '')
+                                if match:
+                                    site_key = match.group(1)
+                            except:
+                                pass
+                        
+                        # Also try to find site key in page source
+                        if not site_key:
+                            page_source_full = self.driver.page_source
+                            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', page_source_full)
+                            if match:
+                                site_key = match.group(1)
+                        
+                        if site_key:
+                            print(f"  🔍 Found Turnstile site key: {site_key[:20]}...")
+                            token = self.captcha_solver.solve_cloudflare_turnstile(site_key, current_url)
+                            
+                            if token:
+                                # Inject the token into the page
+                                try:
+                                    # Execute JavaScript to set the token
+                                    script = f"""
+                                    // Find the Turnstile widget and set the token
+                                    var widgets = document.querySelectorAll('[data-sitekey], iframe[src*="turnstile"]');
+                                    for (var i = 0; i < widgets.length; i++) {{
+                                        var widget = widgets[i];
+                                        var input = widget.closest('form') ? 
+                                            widget.closest('form').querySelector('input[name="cf-turnstile-response"]') :
+                                            document.querySelector('input[name="cf-turnstile-response"]');
+                                        if (input) {{
+                                            input.value = '{token}';
+                                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                        }}
+                                    }}
+                                    
+                                    // Also try to call the callback if it exists
+                                    if (window.turnstile) {{
+                                        var widgets = document.querySelectorAll('[data-sitekey]');
+                                        widgets.forEach(function(widget) {{
+                                            var sitekey = widget.getAttribute('data-sitekey');
+                                            if (sitekey) {{
+                                                try {{
+                                                    window.turnstile.render(widget, {{
+                                                        sitekey: sitekey,
+                                                        callback: function(token) {{
+                                                            // Token callback
+                                                        }}
+                                                    }});
+                                                }} catch(e) {{
+                                                    // Ignore errors
+                                                }}
+                                            }}
+                                        }});
+                                    }}
+                                    """
+                                    self.driver.execute_script(script)
+                                    print("  ✓ Token injected, waiting for page to process...")
+                                    time.sleep(3)
+                                except Exception as e:
+                                    print(f"  ⚠️  Could not inject token: {e}")
+                            
+                            break  # Only solve the first widget found
+                except Exception as e:
+                    print(f"  ⚠️  Error attempting automatic CAPTCHA solve: {e}")
+                    print("  Falling back to waiting for automatic completion...")
+            
+            print("  ⏳ Waiting for Cloudflare challenge to complete...")
             
             # Wait for the challenge to complete
             start_time = time.time()
@@ -1527,13 +1737,53 @@ class HomeAdvisorScraper:
 
 
 def main():
+    import sys
+    
     # Configuration
     GOOGLE_SHEET_ID = "1b8JUs4vGZXY7YTnmPJ9KEUqDzXufmRuRBL2u5i6NPx4"  # Your Google Sheet ID
     CREDENTIALS_FILE = "homeadvisorelizabethscraping-613984138d99.json"  # Google Service Account credentials
-    TOTAL_PAGES = 105
-    START_PAGE = 7  # Change this to resume from a specific page
     HEADLESS_MODE = True  # Set to False if you want to see the browser (useful for solving CAPTCHAs)
     
+    # Get URL from command line argument or prompt
+    if len(sys.argv) > 1:
+        base_url = sys.argv[1]
+    else:
+        print("=" * 60)
+        print("HomeAdvisor Scraper")
+        print("=" * 60)
+        print("\nEnter the HomeAdvisor URL you want to scrape.")
+        print("Example: https://www.homeadvisor.com/c.Air-Conditioning.Elizabeth.NJ.-12002.html")
+        print("Or any other HomeAdvisor category/location URL")
+        print()
+        base_url = input("URL: ").strip()
+        
+        if not base_url:
+            print("ERROR: No URL provided!")
+            return
+        
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+    
+    # Get start page (optional)
+    START_PAGE = 1
+    if len(sys.argv) > 2:
+        try:
+            START_PAGE = int(sys.argv[2])
+        except:
+            pass
+    else:
+        resume = input(f"\nStart from page (press Enter for page 1): ").strip()
+        if resume:
+            try:
+                START_PAGE = int(resume)
+            except:
+                print("Invalid page number, starting from page 1")
+                START_PAGE = 1
+    
+    # Get CAPTCHA API key from environment or command line
+    captcha_api_key = os.getenv('CAPTCHA_API_KEY')
+    if len(sys.argv) > 3:
+        captcha_api_key = sys.argv[3] if sys.argv[3] else None
     
     if not os.path.exists(CREDENTIALS_FILE):
         print(f"ERROR: {CREDENTIALS_FILE} not found!")
@@ -1541,9 +1791,26 @@ def main():
         print("See README.md for instructions.")
         return
     
-    scraper = HomeAdvisorScraper(GOOGLE_SHEET_ID, CREDENTIALS_FILE, headless=HEADLESS_MODE)
+    print(f"\n{'='*60}")
+    print(f"Starting scraper with:")
+    print(f"  URL: {base_url}")
+    print(f"  Starting from page: {START_PAGE}")
+    print(f"{'='*60}\n")
+    
+    scraper = HomeAdvisorScraper(base_url, GOOGLE_SHEET_ID, CREDENTIALS_FILE, headless=HEADLESS_MODE, captcha_api_key=captcha_api_key)
     
     try:
+        # Detect total pages automatically
+        TOTAL_PAGES = scraper.detect_total_pages()
+        
+        if TOTAL_PAGES == 0:
+            print("ERROR: Could not detect any pages. Please check the URL.")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"Will scrape {TOTAL_PAGES} pages (starting from page {START_PAGE})")
+        print(f"{'='*60}\n")
+        
         # Initialize sheet headers (only on first run)
         if START_PAGE == 1:
             headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
@@ -1562,7 +1829,8 @@ def main():
         
     except KeyboardInterrupt:
         print("\n\nScraping interrupted by user. Data has been saved to the sheet.")
-        print("You can resume by changing START_PAGE in scraper.py")
+        print("You can resume by running:")
+        print(f"  python scraper.py \"{base_url}\" {START_PAGE}")
     except Exception as e:
         print(f"Error in main: {e}")
         import traceback
