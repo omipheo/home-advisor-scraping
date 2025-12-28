@@ -2,14 +2,19 @@ import time
 import re
 import gspread
 from google.oauth2.service_account import Credentials
+
+# Always import Selenium components (needed for fallback even when undetected-chromedriver is available)
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+
+# Try to import undetected-chromedriver (optional, for Cloudflare bypass)
 try:
     import undetected_chromedriver as uc
     UC_AVAILABLE = True
 except ImportError:
     UC_AVAILABLE = False
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.chrome.options import Options
+
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -33,6 +38,7 @@ class HomeAdvisorScraper:
         # Store the base URL (can be any HomeAdvisor listing URL)
         self.base_url = base_url.split('?')[0]  # Remove any existing query parameters
         self.headless = headless
+        self.using_undetected = UC_AVAILABLE  # Track if we're using undetected-chromedriver
         
         # Initialize CAPTCHA solver if API key provided
         self.captcha_solver = None
@@ -123,110 +129,114 @@ class HomeAdvisorScraper:
                 print("Using regular Selenium (may require manual CAPTCHA solving)...")
                 
                 # Get ChromeDriver path - ChromeDriverManager sometimes returns wrong file
-                manager_path = ChromeDriverManager().install()
-            print(f"ChromeDriverManager returned: {manager_path}")
-            
-            # Determine the directory to search
-            if os.path.isfile(manager_path):
-                driver_dir = os.path.dirname(manager_path)
-            elif os.path.isdir(manager_path):
-                driver_dir = manager_path
-            else:
-                # Path might be malformed, try to extract directory
-                driver_dir = os.path.dirname(manager_path) if os.path.dirname(manager_path) else manager_path
-            
-            # Normalize path separators (handle / vs \)
-            driver_dir = os.path.normpath(driver_dir)
-            
-            # Search for chromedriver.exe
-            driver_path = None
-            
-            # First, check the directory directly
-            if os.path.isdir(driver_dir):
-                for file in os.listdir(driver_dir):
-                    if file == 'chromedriver.exe':
-                        driver_path = os.path.join(driver_dir, file)
-                        print(f"Found ChromeDriver in directory: {driver_path}")
-                        break
-            
-            # If not found, search subdirectories (walk through the tree)
-            if not driver_path and os.path.isdir(driver_dir):
-                print(f"Searching for chromedriver.exe in: {driver_dir}")
-                for root, dirs, files in os.walk(driver_dir):
-                    for file in files:
-                        if file == 'chromedriver.exe':
-                            driver_path = os.path.join(root, file)
-                            print(f"Found ChromeDriver in subdirectory: {driver_path}")
-                            break
-                    if driver_path:
-                        break
-            
-            # Also try common variations
-            if not driver_path:
-                test_paths = [
-                    os.path.join(driver_dir, 'chromedriver.exe'),
-                    driver_dir.replace('THIRD_PARTY_NOTICES.chromedriver', 'chromedriver.exe'),
-                    os.path.join(os.path.dirname(driver_dir), 'chromedriver.exe'),
-                ]
-                for test_path in test_paths:
-                    if os.path.exists(test_path) and test_path.endswith('.exe'):
-                        driver_path = test_path
-                        print(f"Found ChromeDriver at: {driver_path}")
-                        break
-            
-            if not driver_path or not os.path.exists(driver_path):
-                print("ChromeDriver executable not found, re-downloading...")
-                # Clear cache and try again
-                import shutil
-                from pathlib import Path
-                cache_path = Path.home() / ".wdm"
-                if cache_path.exists():
-                    try:
-                        shutil.rmtree(cache_path)
-                        print("Cache cleared, re-downloading...")
-                    except:
-                        pass
+                try:
+                    manager_path = ChromeDriverManager().install()
+                    print(f"ChromeDriverManager returned: {manager_path}")
+                except Exception as e:
+                    print(f"Error getting ChromeDriver path: {e}")
+                    raise
                 
-                manager_path = ChromeDriverManager().install()
-                print(f"Re-download returned: {manager_path}")
-                
-                # Extract directory from the path
+                # Determine the directory to search
                 if os.path.isfile(manager_path):
                     driver_dir = os.path.dirname(manager_path)
                 elif os.path.isdir(manager_path):
                     driver_dir = manager_path
                 else:
-                    # Try to find the directory
-                    parts = manager_path.split(os.sep)
-                    for i in range(len(parts), 0, -1):
-                        test_dir = os.sep.join(parts[:i])
-                        if os.path.isdir(test_dir):
-                            driver_dir = test_dir
-                            break
-                    else:
-                        driver_dir = os.path.dirname(manager_path)
+                    # Path might be malformed, try to extract directory
+                    driver_dir = os.path.dirname(manager_path) if os.path.dirname(manager_path) else manager_path
+                
+                # Normalize path separators (handle / vs \)
+                driver_dir = os.path.normpath(driver_dir)
                 
                 # Search for chromedriver.exe
+                driver_path = None
+                
+                # First, check the directory directly
                 if os.path.isdir(driver_dir):
-                    # Search current directory and subdirectories
+                    for file in os.listdir(driver_dir):
+                        if file == 'chromedriver.exe':
+                            driver_path = os.path.join(driver_dir, file)
+                            print(f"Found ChromeDriver in directory: {driver_path}")
+                            break
+                
+                # If not found, search subdirectories (walk through the tree)
+                if not driver_path and os.path.isdir(driver_dir):
+                    print(f"Searching for chromedriver.exe in: {driver_dir}")
                     for root, dirs, files in os.walk(driver_dir):
                         for file in files:
                             if file == 'chromedriver.exe':
                                 driver_path = os.path.join(root, file)
+                                print(f"Found ChromeDriver in subdirectory: {driver_path}")
                                 break
                         if driver_path:
                             break
-            
-            if not driver_path or not os.path.exists(driver_path):
-                raise Exception(f"Could not find chromedriver.exe executable.\nSearched in: {driver_dir if 'driver_dir' in locals() else 'unknown'}\nManager returned: {manager_path if 'manager_path' in locals() else 'unknown'}")
-            
-            if not driver_path.endswith('.exe'):
-                raise Exception(f"Invalid ChromeDriver path (not .exe): {driver_path}")
-            
-            print(f"Using ChromeDriver at: {driver_path}")
-            
-            self.driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
-            print("✓ Chrome browser initialized successfully")
+                
+                # Also try common variations
+                if not driver_path:
+                    test_paths = [
+                        os.path.join(driver_dir, 'chromedriver.exe'),
+                        driver_dir.replace('THIRD_PARTY_NOTICES.chromedriver', 'chromedriver.exe'),
+                        os.path.join(os.path.dirname(driver_dir), 'chromedriver.exe'),
+                    ]
+                    for test_path in test_paths:
+                        if os.path.exists(test_path) and test_path.endswith('.exe'):
+                            driver_path = test_path
+                            print(f"Found ChromeDriver at: {driver_path}")
+                            break
+                
+                if not driver_path or not os.path.exists(driver_path):
+                    print("ChromeDriver executable not found, re-downloading...")
+                    # Clear cache and try again
+                    import shutil
+                    from pathlib import Path
+                    cache_path = Path.home() / ".wdm"
+                    if cache_path.exists():
+                        try:
+                            shutil.rmtree(cache_path)
+                            print("Cache cleared, re-downloading...")
+                        except:
+                            pass
+                    
+                    manager_path = ChromeDriverManager().install()
+                    print(f"Re-download returned: {manager_path}")
+                    
+                    # Extract directory from the path
+                    if os.path.isfile(manager_path):
+                        driver_dir = os.path.dirname(manager_path)
+                    elif os.path.isdir(manager_path):
+                        driver_dir = manager_path
+                    else:
+                        # Try to find the directory
+                        parts = manager_path.split(os.sep)
+                        for i in range(len(parts), 0, -1):
+                            test_dir = os.sep.join(parts[:i])
+                            if os.path.isdir(test_dir):
+                                driver_dir = test_dir
+                                break
+                        else:
+                            driver_dir = os.path.dirname(manager_path)
+                    
+                    # Search for chromedriver.exe
+                    if os.path.isdir(driver_dir):
+                        # Search current directory and subdirectories
+                        for root, dirs, files in os.walk(driver_dir):
+                            for file in files:
+                                if file == 'chromedriver.exe':
+                                    driver_path = os.path.join(root, file)
+                                    break
+                            if driver_path:
+                                break
+                
+                if not driver_path or not os.path.exists(driver_path):
+                    raise Exception(f"Could not find chromedriver.exe executable.\nSearched in: {driver_dir if 'driver_dir' in locals() else 'unknown'}\nManager returned: {manager_path if 'manager_path' in locals() else 'unknown'}")
+                
+                if not driver_path.endswith('.exe'):
+                    raise Exception(f"Invalid ChromeDriver path (not .exe): {driver_path}")
+                
+                print(f"Using ChromeDriver at: {driver_path}")
+                
+                self.driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+                print("✓ Chrome browser initialized successfully")
         except OSError as e:
             if "WinError 193" in str(e) or "not a valid Win32 application" in str(e):
                 print(f"✗ Error: ChromeDriver is corrupted or wrong architecture")
@@ -389,6 +399,27 @@ class HomeAdvisorScraper:
     def wait_for_cloudflare_challenge(self, max_wait=60):
         """Wait for Cloudflare challenge (including Turnstile) to complete automatically"""
         try:
+            # When using undetected-chromedriver, check for actual content first
+            # (it may have already bypassed the challenge)
+            if self.using_undetected:
+                try:
+                    # Quick check for HomeAdvisor content
+                    current_url = self.driver.current_url
+                    if 'homeadvisor' in current_url.lower():
+                        # Look for business listings or profile content
+                        has_content = any([
+                            self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="business-info"]'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="contact-information-component"]'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'h1, h2, h3'),
+                            self.driver.find_elements(By.CSS_SELECTOR, 'div.ProList_paginationSummary__dtJGF')
+                        ])
+                        if has_content:
+                            # Content found, challenge likely already bypassed
+                            return True
+                except:
+                    pass
+            
             # Check if we're on a Cloudflare challenge page
             page_source = self.driver.page_source.lower()
             current_url = self.driver.current_url
@@ -406,6 +437,13 @@ class HomeAdvisorScraper:
                 return True  # Not a Cloudflare page, proceed
             
             print("  ⏳ Cloudflare challenge detected...")
+            
+            # When using undetected-chromedriver, reduce wait time and check more frequently
+            if self.using_undetected:
+                max_wait = min(max_wait, 30)  # Shorter timeout for undetected-chromedriver
+                check_interval = 2  # Check every 2 seconds instead of 5
+            else:
+                check_interval = 5
             
             # Try to solve Turnstile CAPTCHA automatically if solver is available
             if self.captcha_solver and self.captcha_solver.enabled:
@@ -494,6 +532,8 @@ class HomeAdvisorScraper:
                     print("  Falling back to waiting for automatic completion...")
             
             print("  ⏳ Waiting for Cloudflare challenge to complete...")
+            if self.using_undetected:
+                print("  (Using undetected-chromedriver - checking for content...)")
             
             # Wait for the challenge to complete
             start_time = time.time()
@@ -503,6 +543,24 @@ class HomeAdvisorScraper:
                 try:
                     current_url = self.driver.current_url
                     page_source = self.driver.page_source.lower()
+                    
+                    # When using undetected-chromedriver, prioritize checking for content
+                    if self.using_undetected:
+                        try:
+                            if 'homeadvisor' in current_url.lower():
+                                has_content = any([
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'article.ProList_businessProCard__qvaeT'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="business-info"]'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="contact-information-component"]'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'div.ProList_paginationSummary__dtJGF'),
+                                    self.driver.find_elements(By.CSS_SELECTOR, 'section#pro-list-container')
+                                ])
+                                if has_content:
+                                    print("  ✓ Cloudflare challenge completed! (Content detected)")
+                                    time.sleep(1)
+                                    return True
+                        except:
+                            pass
                     
                     # Check for Turnstile widget completion
                     try:
@@ -563,13 +621,13 @@ class HomeAdvisorScraper:
                         except:
                             pass
                     
-                    # Show progress every 5 seconds
+                    # Show progress every check_interval seconds
                     elapsed = int(time.time() - start_time)
-                    if elapsed % 5 == 0 and elapsed != 0 and elapsed != last_status:
+                    if elapsed % check_interval == 0 and elapsed != 0 and elapsed != last_status:
                         print(f"  ⏳ Still waiting... ({elapsed}s/{max_wait}s)")
                         last_status = elapsed
                     
-                    time.sleep(1)  # Check every second
+                    time.sleep(check_interval)  # Wait before next check
                     
                 except Exception as e:
                     # If we get an error, might mean page changed
@@ -1391,8 +1449,36 @@ class HomeAdvisorScraper:
                     pass
             
             # Extract phone number - click the button with id="view-phone-number"
+            # Try multiple selectors and wait for button to appear
+            phone_button = None
             try:
-                phone_button = self.driver.find_element(By.ID, "view-phone-number")
+                # Wait for button to appear with multiple selector strategies
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                
+                wait = WebDriverWait(self.driver, 10)
+                
+                # Try multiple selectors
+                selectors = [
+                    (By.ID, "view-phone-number"),
+                    (By.CSS_SELECTOR, "button#view-phone-number"),
+                    (By.CSS_SELECTOR, "[id='view-phone-number']"),
+                    (By.XPATH, "//button[@id='view-phone-number']"),
+                    (By.XPATH, "//button[contains(@aria-label, 'phone') or contains(@aria-label, 'Phone')]"),
+                    (By.XPATH, "//button[contains(text(), 'Phone') or contains(text(), 'phone')]"),
+                    (By.CSS_SELECTOR, "button[data-testid*='phone']"),
+                    (By.CSS_SELECTOR, "a[href*='phone']"),
+                ]
+                
+                for selector_type, selector_value in selectors:
+                    try:
+                        phone_button = wait.until(EC.presence_of_element_located((selector_type, selector_value)))
+                        if phone_button:
+                            print(f"  Found phone button using {selector_type}: {selector_value}")
+                            break
+                    except:
+                        continue
+                
                 if phone_button:
                     print("  Clicking 'Phone number' button...")
                     # Scroll to button first
@@ -1458,31 +1544,34 @@ class HomeAdvisorScraper:
                                 if data['phone']:
                                     break
             except Exception as e:
-                print(f"  Could not click phone button: {e}")
-                # Try alternative selector
+                print(f"  Could not find or click phone button: {e}")
+                # Try to extract phone from page source directly (might be visible without clicking)
                 try:
-                    phone_button = self.driver.find_element(By.XPATH, "//button[@id='view-phone-number'] | //button[contains(@aria-label, 'phone number')]")
-                    if phone_button:
-                        print("  Clicking 'Phone number' button (alternative method)...")
-                        self.driver.execute_script("arguments[0].click();", phone_button)
-                        time.sleep(2)
-                        # Extract phone using Selenium
-                        page_text = self.driver.find_element(By.TAG_NAME, "body").text
-                        phone_patterns = [
-                            r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
-                            r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
-                        ]
-                        for pattern in phone_patterns:
-                            matches = re.findall(pattern, page_text)
-                            if matches:
-                                for match in matches:
-                                    phone = re.sub(r'[^\d]', '', match)
-                                    if len(phone) == 10 and phone[0] in ['2', '3', '4', '5', '6', '7', '8', '9']:
+                    page_source = self.driver.page_source
+                    page_text = self.driver.find_element(By.TAG_NAME, "body").text
+                    
+                    # Look for phone patterns in the page
+                    phone_patterns = [
+                        r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+                        r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+                    ]
+                    for pattern in phone_patterns:
+                        matches = re.findall(pattern, page_text)
+                        if matches:
+                            for match in matches:
+                                phone = re.sub(r'[^\d]', '', match)
+                                if len(phone) == 10 or (len(phone) == 11 and phone[0] == '1'):
+                                    if len(phone) == 11:
+                                        phone = phone[1:]
+                                    # Check if it's a valid phone number (not a date, etc.)
+                                    if phone[0] in ['2', '3', '4', '5', '6', '7', '8', '9']:
                                         data['phone'] = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                                        print(f"  Found phone number in page text: {data['phone']}")
                                         break
-                                if data['phone']:
-                                    break
-                except:
+                            if data['phone']:
+                                break
+                except Exception as e2:
+                    print(f"  Could not extract phone from page: {e2}")
                     pass
             
             return data
@@ -1649,6 +1738,7 @@ class HomeAdvisorScraper:
         """Scrape all pages and collect data"""
         all_businesses = []
         empty_pages_count = 0
+        last_processed_page = start_page - 1  # Track the last successfully processed page
         
         for page_num in range(start_page, total_pages + 1):
             print(f"\n{'='*50}")
@@ -1677,6 +1767,36 @@ class HomeAdvisorScraper:
                 print(f"   Continuing to next page...")
                 time.sleep(3)  # Brief pause before next page
                 continue
+            
+            # Check if all businesses on this page have no profile URLs
+            businesses_without_profile = 0
+            for business in listings:
+                profile_url = business.get('profile_url', '')
+                if not profile_url:
+                    businesses_without_profile += 1
+            
+            # If all businesses have no profile URLs, stop scraping
+            if businesses_without_profile == len(listings) and len(listings) > 0:
+                last_processed_page = page_num
+                print(f"\n{'='*50}")
+                print(f"⚠️  STOPPING: All {len(listings)} businesses on page {page_num} have no profile URLs")
+                print(f"   Without profile URLs, we cannot get detailed information")
+                print(f"   (address, website, phone, email)")
+                print(f"   Stopping scraping process...")
+                print(f"{'='*50}\n")
+                
+                # Write any remaining businesses before stopping
+                if all_businesses:
+                    try:
+                        self.write_to_sheet(all_businesses)
+                        print(f"✓ Saved {len(all_businesses)} businesses to sheet before stopping")
+                    except Exception as e:
+                        print(f"⚠️  Warning: Could not write final batch to sheet: {e}")
+                
+                break  # Exit the loop and stop scraping
+            
+            # Update last processed page
+            last_processed_page = page_num
             
             # Enrich each business with phone and email
             for i, business in enumerate(listings, 1):
@@ -1721,11 +1841,14 @@ class HomeAdvisorScraper:
                 print(f"  You may need to manually export the data or check your connection")
         
         # Summary
+        pages_processed = last_processed_page - start_page + 1
         print(f"\n{'='*50}")
         print(f"Scraping Summary:")
-        print(f"  - Pages processed: {total_pages - start_page + 1}")
+        print(f"  - Pages processed: {pages_processed} (stopped at page {last_processed_page})")
         print(f"  - Empty pages skipped: {empty_pages_count}")
         print(f"  - Total businesses collected: {len(all_businesses)}")
+        if last_processed_page < total_pages:
+            print(f"  - ⚠️  Stopped early: All businesses on page {last_processed_page} had no profile URLs")
         print(f"{'='*50}")
         
         return all_businesses
