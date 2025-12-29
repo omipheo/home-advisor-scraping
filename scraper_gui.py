@@ -57,13 +57,39 @@ class ScraperThread(QThread):
             self.progress_signal.emit(f"Found {total_pages} pages to scrape")
             self.progress_signal.emit(f"Starting from page {self.start_page}")
             
-            # Initialize sheet headers if starting from page 1
-            if self.start_page == 1:
-                self.progress_signal.emit("Initializing Google Sheet with headers...")
-                headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
-                self.scraper.sheet.clear()
-                self.scraper.sheet.append_row(headers)
-                self.progress_signal.emit("Sheet initialized with headers")
+            # Check if headers exist, add them if not
+            try:
+                all_values = self.scraper.sheet.get_all_values()
+                headers_exist = False
+                if all_values and len(all_values) > 0:
+                    first_row = [str(v).lower().strip() for v in all_values[0]]
+                    if 'business name' in first_row or 'businessname' in ''.join(first_row).lower():
+                        headers_exist = True
+                
+                if not headers_exist:
+                    self.progress_signal.emit("Initializing Google Sheet with headers...")
+                    headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
+                    # Only add headers if sheet is empty or doesn't have headers
+                    if not all_values or len(all_values) == 0:
+                        self.scraper.sheet.append_row(headers)
+                        self.progress_signal.emit("Sheet initialized with headers")
+                    else:
+                        # Insert headers at the beginning
+                        self.scraper.sheet.insert_row(headers, 1)
+                        self.progress_signal.emit("Added headers to sheet")
+                else:
+                    self.progress_signal.emit("Sheet already has headers, continuing...")
+            except Exception as e:
+                self.progress_signal.emit(f"⚠️  Warning: Could not check/add headers: {e}")
+                # Try to add headers anyway if sheet is empty
+                try:
+                    all_values = self.scraper.sheet.get_all_values()
+                    if not all_values or len(all_values) == 0:
+                        headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
+                        self.scraper.sheet.append_row(headers)
+                        self.progress_signal.emit("Sheet initialized with headers")
+                except:
+                    pass
             
             # Create a custom stdout that emits signals
             class SignalEmitter:

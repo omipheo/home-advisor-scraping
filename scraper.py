@@ -1694,14 +1694,70 @@ class HomeAdvisorScraper:
         
         return business_data
     
+    def get_existing_business_names(self):
+        """Get all existing business names from the sheet to check for duplicates"""
+        try:
+            # Get all values from the first column (business names)
+            all_values = self.sheet.get_all_values()
+            if not all_values:
+                return set()
+            
+            # Skip header row if it exists
+            start_row = 0
+            if all_values and len(all_values) > 0:
+                # Check if first row looks like headers
+                first_row = [str(v).lower().strip() for v in all_values[0]]
+                if 'business name' in first_row or 'businessname' in ''.join(first_row).lower():
+                    start_row = 1
+            
+            # Extract business names (first column)
+            existing_names = set()
+            for row in all_values[start_row:]:
+                if row and len(row) > 0:
+                    business_name = str(row[0]).strip()
+                    if business_name:  # Only add non-empty names
+                        existing_names.add(business_name.lower())  # Use lowercase for case-insensitive comparison
+            
+            return existing_names
+        except Exception as e:
+            print(f"  ⚠️  Warning: Could not read existing business names: {e}")
+            return set()  # Return empty set on error, will allow all businesses to be added
+    
     def write_to_sheet(self, businesses):
-        """Write business data to Google Sheet with retry logic"""
+        """Write business data to Google Sheet with retry logic, skipping duplicates"""
         if not businesses:
+            return
+        
+        # Get existing business names to check for duplicates
+        existing_names = self.get_existing_business_names()
+        
+        # Filter out businesses that already exist
+        new_businesses = []
+        skipped_count = 0
+        for business in businesses:
+            business_name = business.get('business_name', '').strip()
+            if not business_name:
+                continue  # Skip businesses without names
+            
+            # Check if business name already exists (case-insensitive)
+            if business_name.lower() in existing_names:
+                skipped_count += 1
+                continue
+            
+            new_businesses.append(business)
+            # Add to existing names set to avoid duplicates within the same batch
+            existing_names.add(business_name.lower())
+        
+        if skipped_count > 0:
+            print(f"  Skipped {skipped_count} duplicate business(es)")
+        
+        if not new_businesses:
+            print(f"  All {len(businesses)} business(es) already exist in sheet, skipping write")
             return
         
         # Prepare data for writing
         rows = []
-        for business in businesses:
+        for business in new_businesses:
             row = [
                 business.get('business_name', ''),
                 business.get('star_rating', ''),
@@ -1721,7 +1777,10 @@ class HomeAdvisorScraper:
             for attempt in range(max_retries):
                 try:
                     self.sheet.append_rows(rows)
-                    print(f"Wrote {len(rows)} businesses to sheet")
+                    if skipped_count > 0:
+                        print(f"Wrote {len(rows)} new businesses to sheet (skipped {skipped_count} duplicate(s))")
+                    else:
+                        print(f"Wrote {len(rows)} businesses to sheet")
                     return  # Success, exit function
                 except Exception as e:
                     if attempt < max_retries - 1:
@@ -1934,14 +1993,38 @@ def main():
         print(f"Will scrape {TOTAL_PAGES} pages (starting from page {START_PAGE})")
         print(f"{'='*60}\n")
         
-        # Initialize sheet headers (only on first run)
-        if START_PAGE == 1:
-            headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
-            scraper.sheet.clear()
-            scraper.sheet.append_row(headers)
-            print("Sheet initialized with headers")
-        else:
-            print(f"Resuming from page {START_PAGE}")
+        # Check if headers exist, add them if not
+        try:
+            all_values = scraper.sheet.get_all_values()
+            headers_exist = False
+            if all_values and len(all_values) > 0:
+                first_row = [str(v).lower().strip() for v in all_values[0]]
+                if 'business name' in first_row or 'businessname' in ''.join(first_row).lower():
+                    headers_exist = True
+            
+            if not headers_exist:
+                headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
+                # Only add headers if sheet is empty or doesn't have headers
+                if not all_values or len(all_values) == 0:
+                    scraper.sheet.append_row(headers)
+                    print("Sheet initialized with headers")
+                else:
+                    # Insert headers at the beginning
+                    scraper.sheet.insert_row(headers, 1)
+                    print("Added headers to sheet")
+            else:
+                print("Sheet already has headers, continuing...")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not check/add headers: {e}")
+            # Try to add headers anyway if sheet is empty
+            try:
+                all_values = scraper.sheet.get_all_values()
+                if not all_values or len(all_values) == 0:
+                    headers = ['business name', 'star rating', '# of reviews', 'address', 'website', 'Phone Number', 'Email']
+                    scraper.sheet.append_row(headers)
+                    print("Sheet initialized with headers")
+            except:
+                pass
         
         # Scrape all pages
         businesses = scraper.scrape_all_pages(total_pages=TOTAL_PAGES, start_page=START_PAGE)
